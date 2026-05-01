@@ -1,0 +1,42 @@
+.project
+.classpath
+.factorypath
+.settings
+*.lic
+logs
+target
+*.log
+*.class
+
+#idea
+.idea/
+/idea/
+*.ipr
+*.iml
+*.iws
+
+#maven ignore
+target/
+
+#eclipse ignore
+.settings/
+.project
+.classpath
+
+#temp files
+*.log
+*.cache
+*.diff
+*.patch
+*.tmp
+temp/
+
+.trae/
+.vscode/
+output/
+
+.mcp.json
+.claude/
+docs/
+/release-doc-generator
+.git-clones
