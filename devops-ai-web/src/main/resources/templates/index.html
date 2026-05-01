@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>devops-ai - 仪表盘</title>
+    <link rel="stylesheet" href="/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div th:replace="fragments/sidebar :: sidebar"></div>
+<div class="main-content">
+    <h2 class="mb-4">仪表盘</h2>
+
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card stat-card">
+                <div class="stat-number" th:text="${configCount}">0</div>
+                <div class="stat-label">GitLab 配置数</div>
+            </div>
+        </div>
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">快速操作</div>
+                <div class="card-body">
+                    <a href="/generate" class="btn btn-primary me-2">生成文档</a>
+                    <a href="/config/gitlab" class="btn btn-secondary me-2">配置 GitLab</a>
+                    <a href="/config/ai" class="btn btn-secondary">配置 AI</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-header">最近生成记录</div>
+        <div class="card-body">
+            <table class="table" th:if="${not #lists.isEmpty(recentLogs)}">
+                <thead>
+                <tr>
+                    <th>任务 ID</th>
+                    <th>项目</th>
+                    <th>状态</th>
+                    <th>格式</th>
+                    <th>时间</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="log : ${recentLogs}">
+                    <td th:text="${log.taskId}">-</td>
+                    <td th:text="${log.projectId}">-</td>
+                    <td><span class="badge" th:classappend="${log.status == 'completed'} ? 'bg-success' : (${log.status} == 'failed' ? 'bg-danger' : 'bg-warning')" th:text="${log.status}">-</span></td>
+                    <td th:text="${log.format}">-</td>
+                    <td th:text="${log.createdAt}">-</td>
+                </tr>
+                </tbody>
+            </table>
+            <p th:unless="${not #lists.isEmpty(recentLogs)}" class="text-muted">暂无生成记录</p>
+        </div>
+    </div>
+</div>
+</body>
+</html>

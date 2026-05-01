@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>生成历史 - devops-ai</title>
+    <link rel="stylesheet" href="/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div th:replace="fragments/sidebar :: sidebar"></div>
+<div class="main-content">
+    <h2 class="mb-4">生成历史</h2>
+
+    <div th:if="${message}" class="alert alert-success" th:text="${message}"></div>
+    <div th:if="${error}" class="alert alert-danger" th:text="${error}"></div>
+
+    <div th:if="${currentTask != null}" class="card mb-4">
+        <div class="card-header">当前任务详情 - <span th:text="${currentTask.taskId}">-</span></div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-3">
+                    <strong>状态:</strong>
+                    <span class="badge ms-1"
+                          th:classappend="${currentTask.status == 'completed'} ? 'bg-success' :
+                          (${currentTask.status == 'failed'} ? 'bg-danger' : 'bg-warning')"
+                          th:text="${currentTask.status}">-</span>
+                </div>
+                <div class="col-md-3"><strong>项目:</strong> <span th:text="${currentTask.projectId}">-</span></div>
+                <div class="col-md-3"><strong>格式:</strong> <span th:text="${currentTask.format}">-</span></div>
+                <div class="col-md-3"><strong>生成时间:</strong> <span th:text="${currentTask.createdAt}">-</span></div>
+            </div>
+            <div th:if="${currentTask.status == 'completed'}" class="mt-3">
+                <a class="btn btn-primary btn-sm" target="_blank"
+                   th:href="@{/history/view/{id}(id=${currentTask.taskId})}">查看文档</a>
+                <a class="btn btn-success btn-sm"
+                   th:href="@{/history/download/{id}(id=${currentTask.taskId})}">下载文档</a>
+                <a class="btn btn-danger btn-sm" href="#"
+                   onclick="if(confirm('确认删除此历史记录？')){document.getElementById('deleteForm-${currentTask.taskId}').submit();}">删除</a>
+                <form id="deleteForm-${currentTask.taskId}" action="/history/delete/${currentTask.taskId}" method="post" style="display:none;"></form>
+            </div>
+            <div th:if="${currentTask.errorMessage}" class="alert alert-danger mt-3" th:text="${currentTask.errorMessage}">-</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">历史记录</div>
+        <div class="card-body">
+            <table class="table">
+                <thead>
+                <tr>
+                    <th>任务 ID</th>
+                    <th>项目</th>
+                    <th>状态</th>
+                    <th>格式</th>
+                    <th>增量</th>
+                    <th>创建时间</th>
+                    <th>完成时间</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="log : ${logs}">
+                    <td><a th:href="@{/history(taskId=${log.taskId})}" th:text="${log.taskId}">-</a></td>
+                    <td th:text="${log.projectId}">-</td>
+                    <td>
+                        <span class="badge"
+                              th:classappend="${log.status == 'completed'} ? 'bg-success' :
+                              (${log.status == 'failed'} ? 'bg-danger' : 'bg-warning')"
+                              th:text="${log.status}">-</span>
+                    </td>
+                    <td th:text="${log.format}">-</td>
+                    <td>
+                        <span th:if="${log.incremental}" class="badge bg-info">是</span>
+                        <span th:unless="${log.incremental}" class="badge bg-secondary">否</span>
+                    </td>
+                    <td th:text="${log.createdAt}">-</td>
+                    <td th:text="${log.completedAt}">-</td>
+                    <td>
+                        <div th:if="${log.status == 'completed'}">
+                            <a class="btn btn-outline-primary btn-sm" target="_blank"
+                               th:href="@{/history/view/{id}(id=${log.taskId})}">查看</a>
+                            <a class="btn btn-outline-success btn-sm"
+                               th:href="@{/history/download/{id}(id=${log.taskId})}">下载</a>
+                        </div>
+                        <span th:unless="${log.status == 'completed'}" class="text-muted">-</span>
+                        <a class="btn btn-outline-danger btn-sm ms-1" href="#"
+                           onclick="if(confirm('确认删除此记录？')){document.getElementById('del-${log.taskId}').submit();}">删除</a>
+                        <form id="del-${log.taskId}" th:action="@{/history/delete/{id}(id=${log.taskId})}" method="post" style="display:none;"></form>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+</body>
+</html>

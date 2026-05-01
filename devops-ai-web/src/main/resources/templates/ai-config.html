@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 模型配置 - devops-ai</title>
+    <link rel="stylesheet" href="/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div th:replace="fragments/sidebar :: sidebar"></div>
+<div class="main-content">
+    <h2 class="mb-4">AI 模型配置</h2>
+
+    <div class="card">
+        <div class="card-header">LLM 模型设置</div>
+        <div class="card-body">
+            <form action="/config/ai" method="post" th:action="@{/config/ai}">
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">模型供应商</label>
+                        <select name="provider" class="form-select" id="providerSelect">
+                            <option value="deepseek" th:selected="${provider == 'deepseek'}">DeepSeek</option>
+                            <option value="openai" th:selected="${provider == 'openai'}">OpenAI</option>
+                            <option value="anthropic" th:selected="${provider == 'anthropic'}">Anthropic</option>
+                        </select>
+                        <div class="form-text">选择 AI 模型供应商</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">模型 ID</label>
+                        <input type="text" name="modelName" class="form-control" th:value="${modelName}" placeholder="deepseek-chat">
+                        <div class="form-text">填写模型 ID，例如: deepseek-chat, gpt-4o-mini, claude-3-haiku</div>
+                    </div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">自定义请求地址</label>
+                        <input type="url" name="apiUrl" class="form-control" th:value="${apiUrl}" placeholder="https://api.deepseek.com" id="apiUrlInput">
+                        <div class="form-text">API 基础地址，留空则使用供应商默认地址</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">API 密钥</label>
+                        <input type="password" name="apiKey" class="form-control" th:value="${apiKey}" required>
+                        <div class="form-text">API 密钥将加密存储</div>
+                    </div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">温度参数 (Temperature)</label>
+                        <input type="number" name="temperature" class="form-control" step="0.1" min="0" max="2"
+                               th:value="${temperature}">
+                        <div class="form-text">较低值 (0.1-0.3) 更准确，较高值 (0.7-1.0) 更有创意</div>
+                    </div>
+                </div>
+                <div id="testResult" class="mb-3" style="display:none;"></div>
+                <button type="button" class="btn btn-success me-2" onclick="testConnection()">测试连接</button>
+                <button type="submit" class="btn btn-primary">保存配置</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-header">配置说明</div>
+        <div class="card-body">
+            <ul>
+                <li>AI 分类功能需要配置有效的 API 密钥才能使用</li>
+                <li>未配置 AI 时将自动使用规则分类作为后备方案</li>
+                <li>温度参数建议设置在 0.1-0.3 之间以保证分类准确性</li>
+                <li>分类类别包括: 新功能、功能更新、Bug修复、代码重构、文档更新、性能优化、测试相关、构建相关、CI配置、样式调整、依赖更新</li>
+                <li>切换供应商时，请求地址和模型 ID 会自动填充默认值，也可手动修改</li>
+            </ul>
+        </div>
+    </div>
+</div>
+<script>
+    var defaults = {
+        deepseek: { url: 'https://api.deepseek.com', model: 'deepseek-chat' },
+        openai: { url: 'https://api.openai.com', model: 'gpt-4o-mini' },
+        anthropic: { url: 'https://api.anthropic.com', model: 'claude-3-haiku' }
+    };
+
+    document.getElementById('providerSelect').addEventListener('change', function() {
+        var provider = this.value;
+        var cfg = defaults[provider];
+        var urlInput = document.getElementById('apiUrlInput');
+        var modelInput = document.querySelector('input[name="modelName"]');
+        if (urlInput && !urlInput.value) {
+            urlInput.value = cfg.url;
+        }
+        if (modelInput && !modelInput.value) {
+            modelInput.value = cfg.model;
+        }
+    });
+
+    function testConnection() {
+        var resultDiv = document.getElementById('testResult');
+        resultDiv.style.display = 'block';
+        resultDiv.className = 'mb-3 alert alert-info';
+        resultDiv.textContent = '正在测试连接...';
+
+        var form = document.querySelector('form');
+        var data = new URLSearchParams();
+        data.append('provider', document.querySelector('select[name="provider"]').value);
+        data.append('apiUrl', document.querySelector('input[name="apiUrl"]').value);
+        data.append('modelName', document.querySelector('input[name="modelName"]').value);
+        data.append('apiKey', document.querySelector('input[name="apiKey"]').value);
+
+        fetch('/config/ai/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: data
+        })
+        .then(function(resp) { return resp.text(); })
+        .then(function(text) {
+            if (text.indexOf('成功') !== -1) {
+                resultDiv.className = 'mb-3 alert alert-success';
+            } else {
+                resultDiv.className = 'mb-3 alert alert-danger';
+            }
+            resultDiv.textContent = text;
+        })
+        .catch(function(err) {
+            resultDiv.className = 'mb-3 alert alert-danger';
+            resultDiv.textContent = '请求失败: ' + err.message;
+        });
+    }
+</script>
+</body>
+</html>

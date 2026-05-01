@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<body>
+<nav class="sidebar" th:fragment="sidebar">
+    <div class="sidebar-header">
+        <h3>devops-ai</h3>
+    </div>
+    <ul class="nav flex-column">
+        <li class="nav-item">
+            <a class="nav-link" href="/" th:href="@{/}">仪表盘</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="/generate" th:href="@{/generate}">文档生成</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="/config/gitlab" th:href="@{/config/gitlab}">GitLab 配置</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="/config/ai" th:href="@{/config/ai}">AI 模型配置</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="/templates" th:href="@{/templates}">模板管理</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" href="/history" th:href="@{/history}">生成历史</a>
+        </li>
+    </ul>
+</nav>
+</body>
+</html>

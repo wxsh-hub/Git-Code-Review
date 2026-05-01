@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>初始化向导 - devops-ai</title>
+    <link rel="stylesheet" href="/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="bg-light">
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="text-center mb-4">
+                <h1>devops-ai</h1>
+                <p class="text-muted">通用项目发布文档生成工具</p>
+            </div>
+
+            <div class="card">
+                <div class="card-body wizard-step">
+                    <div class="text-center">
+                        <div class="step-number">1</div>
+                        <h4>GitLab 配置</h4>
+                        <p class="text-muted">请配置 GitLab 连接信息，用于获取提交日志</p>
+                    </div>
+
+                    <div th:if="${error}" class="alert alert-danger" th:text="${error}"></div>
+                    <div th:if="${warning}" class="alert alert-warning" th:text="${warning}"></div>
+                    <div th:if="${message}" class="alert alert-success" th:text="${message}"></div>
+
+                    <form action="/setup/gitlab" method="post" th:action="@{/setup/gitlab}">
+                        <div class="mb-3">
+                            <label class="form-label">配置名称</label>
+                            <input type="text" name="name" class="form-control" placeholder="例如: 公司GitLab" required>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">连接方式</label>
+                            <select name="connectMode" class="form-select" id="connectMode">
+                                <option value="clone" selected>克隆模式 (用户名+密码, 适用于 GitLab CE v18.x)</option>
+                                <option value="api">API 模式 (需 Personal Access Token)</option>
+                            </select>
+                        </div>
+
+                        <div id="cloneModeFields">
+                            <div class="alert alert-warning mb-3">
+                                <strong>推荐</strong>：GitLab CE v18.x 默认禁用密码 API 认证，使用克隆模式可通过 Git 协议正常连接。
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Git 克隆地址</label>
+                                <input type="text" name="gitlabUrl" class="form-control" placeholder="https://gitlab.example.com/group/project.git" required>
+                                <div class="form-text">Git 仓库完整克隆地址，与 Jenkins 中配置的一致</div>
+                            </div>
+                            <div class="row mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">用户名</label>
+                                    <input type="text" name="username" class="form-control" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">密码</label>
+                                    <input type="password" name="password" class="form-control" required>
+                                </div>
+                            </div>
+                            <input type="hidden" name="authType" value="password">
+                        </div>
+
+                        <div id="apiModeFields" style="display:none;">
+                            <div class="alert alert-info mb-3">
+                                API 模式需要 Personal Access Token，适用于能够生成 Token 的场景。
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">GitLab 地址</label>
+                                <input type="url" name="gitlabUrl" class="form-control" placeholder="https://gitlab.example.com">
+                                <div class="form-text">GitLab API 根地址</div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Personal Access Token</label>
+                                <input type="password" name="token" class="form-control" placeholder="GitLab Personal Access Token">
+                                <div class="form-text">在 GitLab 中生成：Settings → Access Tokens → 勾选 read_api 权限</div>
+                            </div>
+                            <input type="hidden" name="authType" value="token">
+                        </div>
+
+                        <div class="text-center mt-4">
+                            <button type="submit" class="btn btn-primary btn-lg px-5">测试连接并保存</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div class="text-center mt-3">
+                <p class="text-muted small">配置信息将加密存储，确保数据安全</p>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+    function toggleConnectMode(val) {
+        var cloneFields = document.getElementById('cloneModeFields');
+        var apiFields = document.getElementById('apiModeFields');
+        if (val === 'clone') {
+            cloneFields.style.display = 'block';
+            apiFields.style.display = 'none';
+            toggleDisabled(cloneFields, false);
+            toggleDisabled(apiFields, true);
+        } else {
+            cloneFields.style.display = 'none';
+            apiFields.style.display = 'block';
+            toggleDisabled(cloneFields, true);
+            toggleDisabled(apiFields, false);
+        }
+    }
+
+    function toggleDisabled(container, disabled) {
+        var inputs = container.querySelectorAll('input, select');
+        for (var i = 0; i < inputs.length; i++) {
+            inputs[i].disabled = disabled;
+        }
+    }
+
+    document.getElementById('connectMode').addEventListener('change', function() {
+        toggleConnectMode(this.value);
+    });
+    toggleConnectMode(document.getElementById('connectMode').value);
+</script>
+</body>
+</html>

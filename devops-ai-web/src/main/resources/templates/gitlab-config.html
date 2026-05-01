@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitLab 配置 - devops-ai</title>
+    <link rel="stylesheet" href="/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div th:replace="fragments/sidebar :: sidebar"></div>
+<div class="main-content">
+    <h2 class="mb-4">GitLab 配置</h2>
+
+    <div th:if="${message}" class="alert alert-success" th:text="${message}"></div>
+    <div th:if="${error}" class="alert alert-danger" th:text="${error}"></div>
+
+    <div class="card">
+        <div class="card-header">新增 GitLab 配置</div>
+        <div class="card-body">
+            <form action="/config/gitlab" method="post" th:action="@{/config/gitlab}">
+                <div class="row mb-3">
+                    <div class="col-md-4">
+                        <label class="form-label">配置名称</label>
+                        <input type="text" name="name" class="form-control" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">连接方式</label>
+                        <select name="connectMode" class="form-select" id="connectMode">
+                            <option value="api">API 模式 (需 Personal Access Token)</option>
+                            <option value="clone" selected>克隆模式 (用户名+密码, 适用于 GitLab CE v18.x)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="apiModeFields" style="display:none;">
+                    <div class="alert alert-info">
+                        <strong>API 模式</strong>：使用 GitLab REST API 获取数据，需配置 Personal Access Token。
+                        适用于能够生成 Token 的场景。
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">GitLab 服务器地址</label>
+                            <input type="url" name="gitlabUrl" class="form-control" placeholder="https://gitlab.example.com">
+                            <div class="form-text">GitLab API 根地址，例如 <code>https://192.168.160.225/</code></div>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Personal Access Token</label>
+                            <input type="password" name="token" class="form-control">
+                            <div class="form-text">在 GitLab 中生成：Settings → Access Tokens → 勾选 read_api 权限</div>
+                        </div>
+                    </div>
+                    <input type="hidden" name="authType" value="token">
+                </div>
+
+                <div id="cloneModeFields">
+                    <div class="alert alert-warning">
+                        <strong>克隆模式</strong>：通过 Git 协议直接克隆仓库获取提交记录，使用用户名+密码认证。
+                        <strong>注意</strong>：GitLab CE v18.x 默认禁用密码 API 认证，建议使用此模式。
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Git 克隆地址</label>
+                            <input type="text" name="gitlabUrl" class="form-control" placeholder="https://gitlab.example.com/group/project.git" required>
+                            <div class="form-text">Git 仓库完整克隆地址，例如 <code>https://192.168.160.225/pd-rs/code/dig-master.git</code>，与 Jenkins 中配置的一致</div>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">用户名</label>
+                            <input type="text" name="username" class="form-control" placeholder="GitLab 用户名" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">密码</label>
+                            <input type="password" name="password" class="form-control" required>
+                        </div>
+                    </div>
+                    <input type="hidden" name="authType" value="password">
+                </div>
+
+                <button type="submit" class="btn btn-primary">保存配置</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-header">已有配置</div>
+        <div class="card-body">
+            <table class="table" th:if="${not #lists.isEmpty(configs)}">
+                <thead>
+                <tr>
+                    <th>名称</th>
+                    <th>URL</th>
+                    <th>连接方式</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr th:each="config : ${configs}">
+                    <td th:text="${config.name}">-</td>
+                    <td th:text="${config.gitlabUrl}">-</td>
+                    <td>
+                        <span class="badge" th:classappend="${config.connectMode == 'clone'} ? 'bg-primary' : 'bg-info'"
+                              th:text="${config.connectMode == 'clone'} ? '克隆模式' : 'API模式'">-</span>
+                    </td>
+                    <td>
+                        <span class="badge" th:classappend="${config.active} ? 'bg-success' : 'bg-secondary'"
+                              th:text="${config.active} ? '启用' : '禁用'">-</span>
+                    </td>
+                    <td>
+                        <form action="/config/gitlab/test" method="post" style="display:inline" th:action="@{/config/gitlab/test}">
+                            <input type="hidden" name="id" th:value="${config.id}">
+                            <button type="submit" class="btn btn-sm btn-info">测试</button>
+                        </form>
+                        <form action="/config/gitlab/delete" method="post" style="display:inline" th:action="@{/config/gitlab/delete}">
+                            <input type="hidden" name="id" th:value="${config.id}">
+                            <button type="submit" class="btn btn-sm btn-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+            <p th:unless="${not #lists.isEmpty(configs)}" class="text-muted">暂无配置</p>
+        </div>
+    </div>
+</div>
+<script>
+    function toggleConnectMode(val) {
+        var apiFields = document.getElementById('apiModeFields');
+        var cloneFields = document.getElementById('cloneModeFields');
+        if (val === 'api') {
+            apiFields.style.display = 'block';
+            cloneFields.style.display = 'none';
+            toggleDisabled(apiFields, false);
+            toggleDisabled(cloneFields, true);
+        } else {
+            apiFields.style.display = 'none';
+            cloneFields.style.display = 'block';
+            toggleDisabled(apiFields, true);
+            toggleDisabled(cloneFields, false);
+        }
+    }
+
+    function toggleDisabled(container, disabled) {
+        var inputs = container.querySelectorAll('input, select');
+        for (var i = 0; i < inputs.length; i++) {
+            inputs[i].disabled = disabled;
+        }
+    }
+
+    document.getElementById('connectMode').addEventListener('change', function() {
+        toggleConnectMode(this.value);
+    });
+    toggleConnectMode(document.getElementById('connectMode').value);
+</script>
+</body>
+</html>
