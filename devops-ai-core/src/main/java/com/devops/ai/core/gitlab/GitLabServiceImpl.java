@@ -6,9 +6,9 @@ import com.devops.ai.core.model.Commit;
 import com.devops.ai.core.model.GitLabCommitQuery;
 import com.devops.ai.core.model.ProjectInfo;
 import com.devops.ai.infrastructure.cache.CacheManager;
-import com.devops.ai.infrastructure.entity.GitLabConfig;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.exception.GitLabApiException;
-import com.devops.ai.infrastructure.repository.GitLabConfigRepository;
+import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.Pager;
 import org.slf4j.Logger;
@@ -24,12 +24,12 @@ public class GitLabServiceImpl implements GitLabService {
     private static final Logger log = LoggerFactory.getLogger(GitLabServiceImpl.class);
 
     private final AuthManager authManager;
-    private final GitLabConfigRepository configRepository;
+    private final ProjectConfigRepository configRepository;
     private final CacheManager cacheManager;
     private final GitCloneService gitCloneService;
 
     public GitLabServiceImpl(AuthManager authManager,
-                             GitLabConfigRepository configRepository,
+                             ProjectConfigRepository configRepository,
                              CacheManager cacheManager,
                              GitCloneService gitCloneService) {
         this.authManager = authManager;
@@ -38,8 +38,8 @@ public class GitLabServiceImpl implements GitLabService {
         this.gitCloneService = gitCloneService;
     }
 
-    private GitLabConfig getActiveConfig() {
-        List<GitLabConfig> activeConfigs = configRepository.findByActiveTrue();
+    private ProjectConfig getActiveConfig() {
+        List<ProjectConfig> activeConfigs = configRepository.findByActiveTrue();
         if (activeConfigs.isEmpty()) {
             throw new GitLabApiException("No active GitLab configuration found");
         }
@@ -47,7 +47,7 @@ public class GitLabServiceImpl implements GitLabService {
     }
 
     private GitLabApi getActiveApi() {
-        GitLabConfig config = getActiveConfig();
+        ProjectConfig config = getActiveConfig();
         if ("clone".equals(config.getConnectMode())) {
             throw new GitLabApiException("Active config is in clone mode, API mode not available");
         }
@@ -55,7 +55,7 @@ public class GitLabServiceImpl implements GitLabService {
     }
 
     private boolean isCloneMode() {
-        GitLabConfig config = getActiveConfig();
+        ProjectConfig config = getActiveConfig();
         return "clone".equals(config.getConnectMode());
     }
 
@@ -64,7 +64,7 @@ public class GitLabServiceImpl implements GitLabService {
         List<Commit> result;
 
         if (isCloneMode()) {
-            GitLabConfig config = getActiveConfig();
+            ProjectConfig config = getActiveConfig();
             String branch = query.getBranch();
             if (branch == null || branch.isEmpty()) {
                 branch = "master";
@@ -210,7 +210,7 @@ public class GitLabServiceImpl implements GitLabService {
     }
 
     @Override
-    public boolean testConnection(GitLabConfig config) {
+    public boolean testConnection(ProjectConfig config) {
         return authManager.testConnection(config);
     }
 
@@ -237,7 +237,7 @@ public class GitLabServiceImpl implements GitLabService {
     @Override
     public List<AuthorInfo> getAuthors(String projectId) {
         if (isCloneMode()) {
-            GitLabConfig config = getActiveConfig();
+            ProjectConfig config = getActiveConfig();
             return gitCloneService.getAuthors(config);
         }
 

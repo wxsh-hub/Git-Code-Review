@@ -3,9 +3,9 @@ package com.devops.ai.api.controller;
 import com.devops.ai.api.dto.ApiResponse;
 import com.devops.ai.core.gitlab.GitLabService;
 import com.devops.ai.infrastructure.entity.AiConfig;
-import com.devops.ai.infrastructure.entity.GitLabConfig;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
-import com.devops.ai.infrastructure.repository.GitLabConfigRepository;
+import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -19,41 +19,41 @@ import java.util.List;
 @Tag(name = "配置管理", description = "系统配置管理接口")
 public class ConfigApiController {
 
-    private final GitLabConfigRepository gitLabConfigRepository;
+    private final ProjectConfigRepository projectConfigRepository;
     private final AiConfigRepository aiConfigRepository;
     private final GitLabService gitLabService;
     private final ConfigEncryptor configEncryptor;
 
-    public ConfigApiController(GitLabConfigRepository gitLabConfigRepository,
+    public ConfigApiController(ProjectConfigRepository projectConfigRepository,
                                AiConfigRepository aiConfigRepository,
                                GitLabService gitLabService,
                                ConfigEncryptor configEncryptor) {
-        this.gitLabConfigRepository = gitLabConfigRepository;
+        this.projectConfigRepository = projectConfigRepository;
         this.aiConfigRepository = aiConfigRepository;
         this.gitLabService = gitLabService;
         this.configEncryptor = configEncryptor;
     }
 
     @GetMapping("/gitlab/config")
-    @Operation(summary = "获取 GitLab 配置列表")
-    public ResponseEntity<ApiResponse<List<GitLabConfig>>> getGitLabConfigs() {
-        return ResponseEntity.ok(ApiResponse.success(gitLabConfigRepository.findAll()));
+    @Operation(summary = "获取项目配置列表")
+    public ResponseEntity<ApiResponse<List<ProjectConfig>>> getGitLabConfigs() {
+        return ResponseEntity.ok(ApiResponse.success(projectConfigRepository.findAll()));
     }
 
     @PostMapping("/gitlab/config")
-    @Operation(summary = "保存 GitLab 配置")
-    public ResponseEntity<ApiResponse<GitLabConfig>> saveGitLabConfig(@RequestBody GitLabConfig config) {
+    @Operation(summary = "保存项目配置")
+    public ResponseEntity<ApiResponse<ProjectConfig>> saveGitLabConfig(@RequestBody ProjectConfig config) {
         if (config.getCredentials() != null && !config.getCredentials().isEmpty()) {
             config.setCredentials(configEncryptor.encrypt(config.getCredentials()));
         }
-        gitLabConfigRepository.save(config);
+        projectConfigRepository.save(config);
         return ResponseEntity.ok(ApiResponse.success("配置已保存", config));
     }
 
     @GetMapping("/gitlab/config/{id}/test")
     @Operation(summary = "测试 GitLab 连接")
     public ResponseEntity<ApiResponse<String>> testConnection(@PathVariable Long id) {
-        GitLabConfig config = gitLabConfigRepository.findById(id).orElse(null);
+        ProjectConfig config = projectConfigRepository.findById(id).orElse(null);
         if (config == null) {
             return ResponseEntity.status(404).body(ApiResponse.error("配置不存在"));
         }

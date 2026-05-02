@@ -9,5 +9,5 @@ import java.util.List;
 @Repository
 public interface ProjectConfigRepository extends JpaRepository<ProjectConfig, Long> {
     List<ProjectConfig> findByActiveTrue();
-    List<ProjectConfig> findByGitlabConfigId(Long gitlabConfigId);
+    ProjectConfig findByProjectCode(String projectCode);
 }

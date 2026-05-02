@@ -32,9 +32,9 @@ public class SecurityConfig {
 
         @Override
         protected void configure(HttpSecurity http) throws Exception {
-            http.antMatcher("/api/**")
+            http
                     .authorizeRequests()
-                    .antMatchers("/api-docs/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                    .antMatchers("/api-docs/**","/api/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                     .anyRequest().authenticated()
                     .and()
                     .addFilterBefore(apiTokenFilter(), org.springframework.security.web.authentication.www.BasicAuthenticationFilter.class)

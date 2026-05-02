@@ -5,7 +5,7 @@ import com.devops.ai.core.model.Branch;
 import com.devops.ai.core.model.Commit;
 import com.devops.ai.core.model.GitLabCommitQuery;
 import com.devops.ai.core.model.ProjectInfo;
-import com.devops.ai.infrastructure.entity.GitLabConfig;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 
 import java.util.List;
 
@@ -17,7 +17,7 @@ public interface GitLabService {
 
     List<Branch> getBranches(String projectId);
 
-    boolean testConnection(GitLabConfig config);
+    boolean testConnection(ProjectConfig config);
 
     List<ProjectInfo> getProjects();
 

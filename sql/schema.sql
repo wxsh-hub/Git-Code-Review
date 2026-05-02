@@ -4,32 +4,24 @@
 CREATE DATABASE IF NOT EXISTS devops_ai DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE devops_ai;
 
--- GitLab 配置表
-CREATE TABLE IF NOT EXISTS gitlab_config (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL COMMENT '配置名称',
-    gitlab_url VARCHAR(255) NOT NULL COMMENT 'GitLab地址',
-    auth_type VARCHAR(20) NOT NULL COMMENT '认证类型: token/password',
-    credentials VARCHAR(500) NOT NULL COMMENT '凭据(加密存储)',
-    api_version VARCHAR(10) NOT NULL DEFAULT 'v4' COMMENT 'API版本',
-    is_active TINYINT(1) DEFAULT 0 COMMENT '是否启用',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='GitLab配置表';
-
--- 项目配置表
+-- 项目配置表（包含 GitLab 连接信息和项目配置）
 CREATE TABLE IF NOT EXISTS project_config (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    gitlab_config_id BIGINT NOT NULL COMMENT '关联GitLab配置',
-    project_id VARCHAR(100) NOT NULL COMMENT 'GitLab项目ID',
-    project_name VARCHAR(200) NOT NULL COMMENT '项目名称',
+    name VARCHAR(100) NOT NULL COMMENT '项目名称',
+    project_code VARCHAR(100) NOT NULL COMMENT '项目编码(唯一标识,用于第三方对接)',
+    project_id VARCHAR(100) DEFAULT NULL COMMENT 'GitLab项目ID',
     default_branch VARCHAR(100) DEFAULT NULL COMMENT '默认分支',
     template_name VARCHAR(100) DEFAULT NULL COMMENT '使用的模板',
+    gitlab_url VARCHAR(255) NOT NULL COMMENT 'GitLab地址',
+    auth_type VARCHAR(20) NOT NULL COMMENT '认证类型: token/password',
+    connect_mode VARCHAR(20) DEFAULT 'api' COMMENT '连接方式: api/clone',
+    credentials VARCHAR(500) NOT NULL COMMENT '凭据(加密存储)',
+    api_version VARCHAR(10) NOT NULL DEFAULT 'v4' COMMENT 'API版本',
     is_active TINYINT(1) DEFAULT 1 COMMENT '是否启用',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    FOREIGN KEY (gitlab_config_id) REFERENCES gitlab_config(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目配置表';
+    UNIQUE KEY uk_project_code (project_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='项目配置表(GitLab连接+项目信息)';
 
 -- AI 配置表
 CREATE TABLE IF NOT EXISTS ai_config (

@@ -343,7 +343,6 @@ public class AiClassifier implements ClassifierStrategy {
                     + "提炼本次版本迭代的核心目标、业务价值与用户价值，总结最关键的改进点。\n\n"
                     + "### 4. 核心开发成果总结\n"
                     + "总结本版本重要功能落地、技术优化、架构改进、性能提升与关键技术突破。\n\n"
-                    + "总结本版的标题为更新日志分析报告。\n\n"
                     + "语言要求：专业、正式、简洁客观，避免冗余描述，符合技术报告规范。";
 
             String response = callLlmApi(prompt, 2000);

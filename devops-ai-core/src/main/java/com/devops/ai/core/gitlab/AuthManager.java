@@ -1,6 +1,6 @@
 package com.devops.ai.core.gitlab;
 
-import com.devops.ai.infrastructure.entity.GitLabConfig;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApiException;
@@ -21,7 +21,7 @@ public class AuthManager {
         this.gitCloneService = gitCloneService;
     }
 
-    public GitLabApi createApi(GitLabConfig config) {
+    public GitLabApi createApi(ProjectConfig config) {
         String gitlabUrl = config.getGitlabUrl();
         String authType = config.getAuthType();
         String credentials = config.getCredentials();
@@ -36,11 +36,8 @@ public class AuthManager {
 
         if ("password".equalsIgnoreCase(authType)) {
             throw new IllegalArgumentException(
-                    "GitLab CE v18.x 已禁用基于密码的 API 认证。\n" +
-                    "原因：自 GitLab 13.0+ 起，密码认证在 REST API 中默认关闭。\n" +
-                    "解决方案：\n" +
-                    "  1. 推荐：在配置中选择「克隆模式」，使用用户名+密码通过 Git 协议连接\n" +
-                    "  2. 或者在 GitLab 管理后台生成 Personal Access Token，使用「API 模式 + Token 认证」");
+                    "GitLab CE v18.x has disabled password-based API authentication.\n" +
+                    "Solution: Use clone mode with username+password, or generate a Personal Access Token.");
         }
 
         if ("token".equalsIgnoreCase(authType)) {
@@ -49,7 +46,7 @@ public class AuthManager {
             return api;
         }
 
-        throw new IllegalArgumentException("不支持的认证类型: " + authType);
+        throw new IllegalArgumentException("Unsupported auth type: " + authType);
     }
 
     private void disableSslIfNeeded(GitLabApi api, String gitlabUrl) {
@@ -59,7 +56,7 @@ public class AuthManager {
         }
     }
 
-    public boolean testConnection(GitLabConfig config) {
+    public boolean testConnection(ProjectConfig config) {
         if ("clone".equals(config.getConnectMode())) {
             return gitCloneService.testConnection(config);
         }
@@ -71,11 +68,11 @@ public class AuthManager {
         } catch (GitLabApiException e) {
             log.warn("GitLab connection test failed for {}: {}", config.getGitlabUrl(), e.getMessage(), e);
             throw new com.devops.ai.infrastructure.exception.GitLabApiException(
-                    "GitLab 连接失败: " + e.getMessage(), e);
+                    "GitLab connection failed: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Unexpected error during GitLab connection test for {}: {}", config.getGitlabUrl(), e.getMessage(), e);
             throw new com.devops.ai.infrastructure.exception.GitLabApiException(
-                    "连接测试异常: " + e.getMessage(), e);
+                    "Connection test error: " + e.getMessage(), e);
         }
     }
 }

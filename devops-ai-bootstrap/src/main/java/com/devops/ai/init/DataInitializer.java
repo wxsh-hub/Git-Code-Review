@@ -1,9 +1,9 @@
 package com.devops.ai.init;
 
 import com.devops.ai.infrastructure.entity.CommitCategory;
-import com.devops.ai.infrastructure.entity.GitLabConfig;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.repository.CommitCategoryRepository;
-import com.devops.ai.infrastructure.repository.GitLabConfigRepository;
+import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -17,12 +17,12 @@ public class DataInitializer implements CommandLineRunner {
     private static final Logger log = LoggerFactory.getLogger(DataInitializer.class);
 
     private final CommitCategoryRepository categoryRepository;
-    private final GitLabConfigRepository gitLabConfigRepository;
+    private final ProjectConfigRepository projectConfigRepository;
 
     public DataInitializer(CommitCategoryRepository categoryRepository,
-                           GitLabConfigRepository gitLabConfigRepository) {
+                           ProjectConfigRepository projectConfigRepository) {
         this.categoryRepository = categoryRepository;
-        this.gitLabConfigRepository = gitLabConfigRepository;
+        this.projectConfigRepository = projectConfigRepository;
     }
 
     @Override
@@ -75,12 +75,12 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     private void checkConfigStatus() {
-        List<GitLabConfig> activeConfigs = gitLabConfigRepository.findByActiveTrue();
+        List<ProjectConfig> activeConfigs = projectConfigRepository.findByActiveTrue();
         if (activeConfigs.isEmpty()) {
-            log.info("No active GitLab configuration found. Please visit /setup to configure.");
+            log.info("No active project configuration found. Please visit /setup to configure.");
             log.info("Application started successfully in setup mode.");
         } else {
-            log.info("Found {} active GitLab configuration(s).", activeConfigs.size());
+            log.info("Found {} active project configuration(s).", activeConfigs.size());
         }
     }
 }

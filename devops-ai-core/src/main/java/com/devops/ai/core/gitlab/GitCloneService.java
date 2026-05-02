@@ -4,7 +4,7 @@ import com.devops.ai.core.model.AuthorInfo;
 import com.devops.ai.core.model.Branch;
 import com.devops.ai.core.model.Commit;
 import com.devops.ai.core.model.ProjectInfo;
-import com.devops.ai.infrastructure.entity.GitLabConfig;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.ListBranchCommand;
@@ -63,16 +63,16 @@ public class GitCloneService {
         }
     }
 
-    public List<Commit> getCommits(GitLabConfig config, String branch, int maxCount) {
+    public List<Commit> getCommits(ProjectConfig config, String branch, int maxCount) {
         return getCommits(config, branch, maxCount, null, null, null, null);
     }
 
-    public List<Commit> getCommits(GitLabConfig config, String branch, int maxCount,
+    public List<Commit> getCommits(ProjectConfig config, String branch, int maxCount,
                                     String sinceHash, String untilHash) {
         return getCommits(config, branch, maxCount, sinceHash, untilHash, null, null);
     }
 
-    public List<Commit> getCommits(GitLabConfig config, String branch, int maxCount,
+    public List<Commit> getCommits(ProjectConfig config, String branch, int maxCount,
                                     String sinceHash, String untilHash,
                                     Date since, Date until) {
         File cloneDir = getCloneDir(config);
@@ -169,7 +169,7 @@ public class GitCloneService {
         }
     }
 
-    public boolean testConnection(GitLabConfig config) {
+    public boolean testConnection(ProjectConfig config) {
         File cloneDir = getCloneDir(config);
         Git git = null;
         try {
@@ -205,7 +205,7 @@ public class GitCloneService {
 // ... existing code ...
 
 
-    public ProjectInfo getProjectInfo(GitLabConfig config) {
+    public ProjectInfo getProjectInfo(ProjectConfig config) {
         String url = config.getGitlabUrl();
         String projectName = extractProjectName(url);
         ProjectInfo info = new ProjectInfo();
@@ -217,7 +217,7 @@ public class GitCloneService {
         return info;
     }
 
-    public List<Branch> getBranches(GitLabConfig config) {
+    public List<Branch> getBranches(ProjectConfig config) {
         File cloneDir = getCloneDir(config);
         Git git = null;
         try {
@@ -257,7 +257,7 @@ public class GitCloneService {
         }
     }
 
-    public List<AuthorInfo> getAuthors(GitLabConfig config) {
+    public List<AuthorInfo> getAuthors(ProjectConfig config) {
         File cloneDir = getCloneDir(config);
         Git git = null;
         try {
@@ -305,7 +305,7 @@ public class GitCloneService {
 
         } catch (Exception e) {
             log.error("Failed to get authors via clone: {}", e.getMessage(), e);
-            throw new RuntimeException("获取作者列表失败: " + e.getMessage(), e);
+            throw new RuntimeException("Failed to get authors via clone: " + e.getMessage(), e);
         } finally {
             if (git != null) {
                 git.close();
@@ -313,7 +313,7 @@ public class GitCloneService {
         }
     }
 
-    private UsernamePasswordCredentialsProvider createCredentials(GitLabConfig config) {
+    private UsernamePasswordCredentialsProvider createCredentials(ProjectConfig config) {
         String decryptedCredentials = config.getCredentials();
         try {
             decryptedCredentials = configEncryptor.decrypt(decryptedCredentials);
@@ -331,7 +331,7 @@ public class GitCloneService {
         return new UsernamePasswordCredentialsProvider("oauth2", decryptedCredentials);
     }
 
-    private File getCloneDir(GitLabConfig config) {
+    private File getCloneDir(ProjectConfig config) {
         String safeName = (config.getName() != null ? config.getName() : "repo")
                 .replaceAll("[^a-zA-Z0-9_-]", "_");
         return new File(CLONE_DIR, safeName + "_" + (config.getId() != null ? config.getId() : "new"));

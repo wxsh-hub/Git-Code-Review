@@ -2,19 +2,23 @@ package com.devops.ai.api.controller;
 
 import com.devops.ai.api.dto.*;
 import com.devops.ai.core.generator.DocumentRequest;
-import com.devops.ai.core.generator.DocumentResult;
 import com.devops.ai.core.generator.GenerationOrchestrator;
 import com.devops.ai.infrastructure.entity.GenerationLog;
-import com.devops.ai.infrastructure.repository.GenerationLogRepository;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
+import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import cn.hutool.core.util.StrUtil;
 
-import javax.validation.Valid;
+import java.io.File;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -22,18 +26,102 @@ import javax.validation.Valid;
 public class DocumentApiController {
 
     private final GenerationOrchestrator orchestrator;
-    private final GenerationLogRepository generationLogRepository;
+    private final ProjectConfigRepository projectConfigRepository;
 
     public DocumentApiController(GenerationOrchestrator orchestrator,
-                                 GenerationLogRepository generationLogRepository) {
+                                 ProjectConfigRepository projectConfigRepository) {
         this.orchestrator = orchestrator;
-        this.generationLogRepository = generationLogRepository;
+        this.projectConfigRepository = projectConfigRepository;
+    }
+
+    @GetMapping("/generate")
+    @Operation(summary = "触发文档生成(GET)", description = "通过GET请求提交文档生成任务，异步执行。必须传入projectCode。")
+    public ResponseEntity<ApiResponse<TaskResponse>> generateGet(
+            @RequestParam String projectCode,
+            @RequestParam(required = true) String branch,
+            @RequestParam(required = true) String templateName,
+            @RequestParam(required = true) String format,
+            @RequestParam(required = true) String projectVersion,
+            @RequestParam(required = false) String author,
+            @RequestParam(required = false) String sinceHash,
+            @RequestParam(required = false, defaultValue = "false") boolean incremental,
+            @RequestParam(required = false, defaultValue = "false") boolean useAiClassifier) {
+
+        if (StrUtil.isBlank(projectCode)) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("projectCode不能为空，必须指定项目编码"));
+        }
+
+        ProjectConfig project = projectConfigRepository.findByProjectCode(projectCode);
+        if (project == null) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("项目编码不存在: " + projectCode));
+        }
+
+        // 处理分支默认值
+        String finalBranch = branch;
+        if (StrUtil.isBlank(finalBranch) && StrUtil.isNotBlank(project.getDefaultBranch())) {
+            finalBranch = project.getDefaultBranch();
+        }
+
+        // 处理模板名称默认值
+        String finalTemplateName = templateName;
+        if (StrUtil.isBlank(finalTemplateName)) {
+            if (StrUtil.isNotBlank(project.getTemplateName())) {
+                finalTemplateName = project.getTemplateName();
+            } else {
+                finalTemplateName = "standard";
+            }
+        }
+
+        DocumentRequest docRequest = new DocumentRequest();
+        docRequest.setProjectId(project.getProjectId());
+        docRequest.setProjectName(project.getProjectCode());
+        docRequest.setBranch(finalBranch);
+        docRequest.setTemplateName(finalTemplateName);
+        docRequest.setFormat(format);
+        docRequest.setSinceHash(sinceHash);
+        docRequest.setProjectVersion(projectVersion);
+        docRequest.setAuthor(author);
+        docRequest.setIncremental(incremental);
+        docRequest.setUseAiClassifier(useAiClassifier);
+
+        if (StrUtil.isBlank(docRequest.getUntil())) {
+            docRequest.setUntil(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
+        }
+
+        String taskId = orchestrator.submitGeneration(docRequest);
+
+        TaskResponse taskResponse = new TaskResponse(taskId, "pending", "5s");
+        return ResponseEntity.ok(ApiResponse.success("文档生成任务已提交", taskResponse));
     }
 
     @PostMapping("/generate")
-    @Operation(summary = "触发文档生成", description = "提交文档生成任务，异步执行")
+    @Operation(summary = "触发文档生成", description = "提交文档生成任务，异步执行。必须传入projectCode。")
     public ResponseEntity<ApiResponse<TaskResponse>> generate(
-            @Valid @RequestBody GenerateRequest request) {
+            @RequestBody GenerateRequest request) {
+
+        if (StrUtil.isBlank(request.getProjectCode())) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("projectCode不能为空，必须指定项目编码"));
+        }
+
+        ProjectConfig project = projectConfigRepository.findByProjectCode(request.getProjectCode());
+        if (project == null) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("项目编码不存在: " + request.getProjectCode()));
+        }
+
+        if (StrUtil.isBlank(request.getBranch()) && StrUtil.isNotBlank(project.getDefaultBranch())) {
+            request.setBranch(project.getDefaultBranch());
+        }
+        if (StrUtil.isBlank(request.getTemplateName())) {
+            if (StrUtil.isNotBlank(project.getTemplateName())) {
+                request.setTemplateName(project.getTemplateName());
+            } else {
+                request.setTemplateName("standard");
+            }
+        }
 
         boolean hasTimeParams = StrUtil.isNotBlank(request.getSince()) || StrUtil.isNotBlank(request.getUntil());
         boolean hasHashParams = StrUtil.isNotBlank(request.getSinceHash()) || StrUtil.isNotBlank(request.getUntilHash());
@@ -43,10 +131,12 @@ public class DocumentApiController {
         }
 
         DocumentRequest docRequest = new DocumentRequest();
-        docRequest.setProjectId(request.getProjectId());
+        docRequest.setProjectId(project.getProjectId());
+        docRequest.setProjectName(project.getProjectCode());
         docRequest.setBranch(request.getBranch());
         docRequest.setTemplateName(request.getTemplateName());
         docRequest.setFormat(request.getFormat());
+        docRequest.setProjectVersion(request.getProjectVersion());
         docRequest.setSince(request.getSince());
         docRequest.setUntil(request.getUntil());
         docRequest.setAuthor(request.getAuthor());
@@ -56,11 +146,17 @@ public class DocumentApiController {
         docRequest.setIncremental(request.isIncremental());
         docRequest.setUseAiClassifier(request.isUseAiClassifier());
 
+        if (StrUtil.isBlank(docRequest.getUntil())) {
+            docRequest.setUntil(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
+        }
+
         String taskId = orchestrator.submitGeneration(docRequest);
 
         TaskResponse taskResponse = new TaskResponse(taskId, "pending", "5s");
         return ResponseEntity.ok(ApiResponse.success("文档生成任务已提交", taskResponse));
     }
+
+    
 
     @GetMapping("/tasks/{taskId}")
     @Operation(summary = "查询任务状态", description = "根据任务ID查询文档生成任务状态")
@@ -96,8 +192,7 @@ public class DocumentApiController {
     @GetMapping("/tasks/{taskId}/result")
     @Operation(summary = "获取生成结果", description = "获取已生成的文档内容")
     public ResponseEntity<?> getTaskResult(
-            @PathVariable String taskId,
-            @RequestHeader(value = "Accept", defaultValue = "text/markdown") String acceptType) {
+            @PathVariable String taskId) {
 
         GenerationLog logEntry = orchestrator.getTaskLog(taskId);
         if (logEntry == null) {
@@ -110,29 +205,96 @@ public class DocumentApiController {
                     .body(ApiResponse.error("任务尚未完成，当前状态: " + logEntry.getStatus()));
         }
 
-        DocumentRequest request = new DocumentRequest();
-        request.setProjectId(logEntry.getProjectId());
-        request.setFormat(logEntry.getFormat());
+        String outputPath = logEntry.getOutputPath();
+        if (StrUtil.isBlank(outputPath)) {
+            return ResponseEntity.status(500)
+                    .body(ApiResponse.error("文档内容为空，未找到输出文件"));
+        }
 
-        DocumentResult result = orchestrator.generateSync(request);
+        try {
+            String filePath = outputPath.startsWith("/output/") ? outputPath.substring(8) : outputPath;
+            File outputFile = new File("output", filePath);
+            if (!outputFile.exists()) {
+                outputFile = new File(filePath);
+            }
+            if (!outputFile.exists()) {
+                return ResponseEntity.status(500)
+                        .body(ApiResponse.error("输出文件不存在: " + outputPath));
+            }
 
-        if (result.isSuccess() && result.getContent() != null) {
             MediaType mediaType;
             if ("html".equals(logEntry.getFormat())) {
                 mediaType = MediaType.TEXT_HTML;
-            } else if ("pdf".equals(logEntry.getFormat())) {
-                mediaType = MediaType.APPLICATION_PDF;
             } else {
                 mediaType = MediaType.valueOf("text/markdown");
             }
+
+            String content = new String(Files.readAllBytes(outputFile.toPath()), java.nio.charset.StandardCharsets.UTF_8);
 
             return ResponseEntity.ok()
                     .contentType(mediaType)
                     .header(HttpHeaders.CONTENT_DISPOSITION,
                             "attachment; filename=\"CHANGELOG_" + logEntry.getTaskId() + "\"")
-                    .body(result.getContent());
+                    .body(content);
+        } catch (Exception e) {
+            return ResponseEntity.status(500)
+                    .body(ApiResponse.error("读取输出文件失败: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/tasks/{taskId}/download")
+    @Operation(summary = "下载生成文件", description = "以文件流方式下载已生成的文档文件")
+    public ResponseEntity<?> downloadTaskFile(
+            @PathVariable String taskId) {
+
+        GenerationLog logEntry = orchestrator.getTaskLog(taskId);
+        if (logEntry == null) {
+            return ResponseEntity.status(404)
+                    .body(ApiResponse.error("任务不存在: " + taskId));
         }
 
-        return ResponseEntity.ok(ApiResponse.error("文档内容为空"));
+        if (!"completed".equals(logEntry.getStatus())) {
+            return ResponseEntity.status(409)
+                    .body(ApiResponse.error("任务尚未完成，当前状态: " + logEntry.getStatus()));
+        }
+
+        String outputPath = logEntry.getOutputPath();
+        if (StrUtil.isBlank(outputPath)) {
+            return ResponseEntity.status(500)
+                    .body(ApiResponse.error("文档内容为空，未找到输出文件"));
+        }
+
+        try {
+            String filePath = outputPath.startsWith("/output/") ? outputPath.substring(8) : outputPath;
+            File outputFile = new File("output", filePath);
+            if (!outputFile.exists()) {
+                outputFile = new File(filePath);
+            }
+            if (!outputFile.exists()) {
+                return ResponseEntity.status(500)
+                        .body(ApiResponse.error("输出文件不存在: " + outputPath));
+            }
+
+            String extension = filePath.contains(".") ? filePath.substring(filePath.lastIndexOf(".")) : "";
+            MediaType mediaType;
+            if ("html".equals(logEntry.getFormat())) {
+                mediaType = MediaType.TEXT_HTML;
+            } else {
+                mediaType = MediaType.valueOf("text/markdown");
+            }
+
+            InputStreamResource resource = new InputStreamResource(Files.newInputStream(outputFile.toPath()));
+
+            return ResponseEntity.ok()
+                    .contentType(mediaType)
+                    .contentLength(outputFile.length())
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"CHANGELOG_" + logEntry.getTaskId() + extension + "\"")
+                    .body(resource);
+        } catch (Exception e) {
+            return ResponseEntity.status(500)
+                    .body(ApiResponse.error("下载文件失败: " + e.getMessage()));
+        }
     }
+
 }
