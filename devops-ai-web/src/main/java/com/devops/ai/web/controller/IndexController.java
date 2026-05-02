@@ -1,7 +1,7 @@
 package com.devops.ai.web.controller;
 
 import com.devops.ai.infrastructure.entity.GenerationLog;
-import com.devops.ai.infrastructure.repository.GitLabConfigRepository;
+import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import com.devops.ai.infrastructure.repository.GenerationLogRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,19 +19,19 @@ public class IndexController {
 
     private static final Logger log = LoggerFactory.getLogger(IndexController.class);
 
-    private final GitLabConfigRepository gitLabConfigRepository;
+    private final ProjectConfigRepository projectConfigRepository;
     private final GenerationLogRepository generationLogRepository;
 
-    public IndexController(GitLabConfigRepository gitLabConfigRepository,
+    public IndexController(ProjectConfigRepository projectConfigRepository,
                            GenerationLogRepository generationLogRepository) {
-        this.gitLabConfigRepository = gitLabConfigRepository;
+        this.projectConfigRepository = projectConfigRepository;
         this.generationLogRepository = generationLogRepository;
     }
 
     @GetMapping("/")
     public String index(Model model) {
         try {
-            long configCount = gitLabConfigRepository.count();
+            long configCount = projectConfigRepository.count();
             if (configCount == 0) {
                 return "redirect:/setup";
             }

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head th:replace="fragments/header :: header">
+    <title>项目配置 - devops-ai</title>
+</head>
+<body class="bg-[#0A0E14] text-[#E2E8F0] min-h-screen antialiased">
+<div th:replace="fragments/sidebar :: sidebar"></div>
+<div class="ml-56 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto">
+        <div class="mb-8">
+            <h1 class="text-xl font-semibold text-[#F8FAFC] tracking-tight">项目配置</h1>
+            <p class="text-sm text-[#64748B] mt-1">管理项目，包含 GitLab 连接信息和项目配置</p>
+        </div>
+
+        <div th:if="${message}" class="mb-4 px-4 py-3 rounded-lg bg-[#22C55E]/10 border border-[#22C55E]/20 text-sm text-[#22C55E]" th:text="${message}"></div>
+        <div th:if="${error}" class="mb-4 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-400" th:text="${error}"></div>
+
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B]">
+            <div class="px-6 py-4 border-b border-[#1E293B]">
+                <h3 class="text-sm font-medium text-[#F8FAFC]">新增项目</h3>
+            </div>
+            <div class="p-6">
+                <form action="/config/project" method="post" th:action="@{/config/project}" id="projectForm">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">项目名称</label>
+                            <input type="text" name="name" id="projectName" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" required oninput="autoGenerateCode()" placeholder="例如：用户服务">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">项目编码 <span class="text-[#64748B] text-xs">(自动生成，可修改)</span></label>
+                            <div class="flex gap-2">
+                                <input type="text" name="projectCode" id="projectCode" class="input-field flex-1 bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#22C55E] font-mono focus:outline-none" placeholder="自动生成" readonly>
+                                <button type="button" onclick="toggleCodeEdit(this)" class="px-3 py-2.5 rounded-lg border border-[#1E293B] text-xs text-[#94A3B8] cursor-pointer bg-transparent">修改</button>
+                            </div>
+                            <p class="mt-1 text-xs text-[#64748B]">第三方对接时使用此编码调用 API</p>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-[#1E293B] pt-4 mb-4">
+                        <h4 class="text-sm font-medium text-[#F8FAFC] mb-3">GitLab 连接信息</h4>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">GitLab 地址</label>
+                            <input type="url" name="gitlabUrl" id="gitlabUrl" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" required placeholder="https://gitlab.example.com">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">认证方式</label>
+                            <select name="authType" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="authType" onchange="toggleAuthType()">
+                                <option value="token" class="bg-[#0F172A]">Token 认证</option>
+                                <option value="password" class="bg-[#0F172A]">用户名+密码</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="tokenField">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+                            <div>
+                                <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">Personal Access Token</label>
+                                <input type="password" name="token" id="tokenInput" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                            </div>
+                        </div>
+                        <input type="hidden" name="connectMode" value="api">
+                    </div>
+
+                    <div id="passwordField" style="display:none;">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+                            <div>
+                                <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">用户名</label>
+                                <input type="text" name="username" id="usernameInput" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">密码</label>
+                                <input type="password" name="password" id="passwordInput" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                            </div>
+                        </div>
+                        <input type="hidden" name="connectMode" value="clone">
+                    </div>
+
+                    <div class="flex items-center gap-3 mb-5">
+                        <button type="button" onclick="testConnection()" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg border border-[#3B82F6] text-[#3B82F6] text-sm font-medium cursor-pointer bg-transparent hover:bg-[#3B82F6]/10" id="testBtn">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                            </svg>
+                            测试连接
+                        </button>
+                        <span id="testResult" class="text-sm"></span>
+                    </div>
+
+                    <div class="border-t border-[#1E293B] pt-4 mb-4">
+                        <h4 class="text-sm font-medium text-[#F8FAFC] mb-3">项目设置 <span id="projectSettingsHint" class="text-[#64748B] text-xs font-normal">(请先测试连接)</span></h4>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">GitLab 项目</label>
+                            <select name="projectId" id="projectSelect" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" disabled onchange="fetchBranches()">
+                                <option value="" class="bg-[#0F172A]">-- 请先测试连接 --</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">默认分支</label>
+                            <select name="defaultBranch" id="branchSelect" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" disabled>
+                                <option value="" class="bg-[#0F172A]">-- 请先选择项目 --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">模板</label>
+                            <select name="templateName" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                                <option th:each="t : ${templates}" th:value="${t.name}" th:text="${t.displayName}" th:selected="${t.name == 'standard'}" class="bg-[#0F172A]"></option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold border-none cursor-pointer">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        保存项目
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B] mt-5">
+            <div class="px-6 py-4 border-b border-[#1E293B]">
+                <h3 class="text-sm font-medium text-[#F8FAFC]">已有项目</h3>
+            </div>
+            <div class="p-6">
+                <table class="w-full" th:if="${not #lists.isEmpty(projects)}">
+                    <thead>
+                        <tr class="text-left">
+                            <th class="pb-3 pr-4 text-[#64748B]">项目名称</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">编码</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">GitLab 地址</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">分支</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">模板</th>
+                            <th class="pb-3 text-[#64748B]">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr th:each="p : ${projects}" class="border-t border-[#1E293B] fade-in">
+                            <td class="py-3 pr-4 text-sm text-[#E2E8F0]" th:text="${p.name}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#22C55E] font-mono" th:text="${p.projectCode}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#94A3B8] font-mono max-w-[150px] truncate" th:text="${p.gitlabUrl}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#94A3B8]" th:text="${p.defaultBranch}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#94A3B8]" th:text="${p.templateName}">-</td>
+                            <td class="py-3">
+                                <form action="/config/project/delete" method="post" style="display:inline" th:action="@{/config/project/delete}">
+                                    <input type="hidden" name="id" th:value="${p.id}">
+                                    <button type="submit" class="px-3 py-1.5 rounded-md border border-red-500/20 text-xs text-red-400 cursor-pointer bg-transparent">删除</button>
+                                </form>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p th:unless="${not #lists.isEmpty(projects)}" class="text-sm text-[#64748B] text-center py-8">暂无项目配置</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    var connectionTested = false;
+    var currentGitlabUrl = '';
+    var currentAuthType = '';
+    var currentToken = '';
+    var currentUsername = '';
+    var currentPassword = '';
+
+    function autoGenerateCode() {
+        var name = document.getElementById('projectName').value;
+        var codeField = document.getElementById('projectCode');
+        if (!codeField.dataset.manual) {
+            codeField.value = generateCode(name);
+        }
+    }
+
+    function generateCode(name) {
+        if (!name || name.trim() === '') return '';
+        return name.trim()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-zA-Z0-9\-]/g, '')
+            .toLowerCase()
+            .replace(/-{2,}/g, '-')
+            .replace(/^-|-$/g, '');
+    }
+
+    function toggleCodeEdit(btn) {
+        var codeField = document.getElementById('projectCode');
+        if (codeField.readOnly) {
+            codeField.readOnly = false;
+            codeField.classList.remove('text-[#22C55E]');
+            codeField.classList.add('text-[#E2E8F0]');
+            codeField.focus();
+            btn.textContent = '自动';
+        } else {
+            codeField.readOnly = true;
+            codeField.classList.add('text-[#22C55E]');
+            codeField.classList.remove('text-[#E2E8F0]');
+            delete codeField.dataset.manual;
+            autoGenerateCode();
+            btn.textContent = '修改';
+        }
+    }
+
+    function toggleAuthType() {
+        var authType = document.getElementById('authType').value;
+        document.getElementById('tokenField').style.display = authType === 'token' ? 'block' : 'none';
+        document.getElementById('passwordField').style.display = authType === 'password' ? 'block' : 'none';
+        connectionTested = false;
+        resetProjectSettings();
+    }
+
+    function resetProjectSettings() {
+        var projectSelect = document.getElementById('projectSelect');
+        var branchSelect = document.getElementById('branchSelect');
+        projectSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请先测试连接 --</option>';
+        projectSelect.disabled = true;
+        branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请先选择项目 --</option>';
+        branchSelect.disabled = true;
+        document.getElementById('projectSettingsHint').textContent = '(请先测试连接)';
+        document.getElementById('testResult').innerHTML = '';
+    }
+
+    function testConnection() {
+        var btn = document.getElementById('testBtn');
+        var result = document.getElementById('testResult');
+        var gitlabUrl = document.getElementById('gitlabUrl').value.trim();
+        var authType = document.getElementById('authType').value;
+
+        if (!gitlabUrl) {
+            result.innerHTML = '<span class="text-red-400">请输入 GitLab 地址</span>';
+            return;
+        }
+
+        var token = document.getElementById('tokenInput') ? document.getElementById('tokenInput').value.trim() : '';
+        var username = document.getElementById('usernameInput') ? document.getElementById('usernameInput').value.trim() : '';
+        var password = document.getElementById('passwordInput') ? document.getElementById('passwordInput').value : '';
+
+        if (authType === 'token' && !token) {
+            result.innerHTML = '<span class="text-red-400">请输入 Token</span>';
+            return;
+        }
+        if (authType === 'password' && (!username || !password)) {
+            result.innerHTML = '<span class="text-red-400">请输入用户名和密码</span>';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="inline-block animate-spin w-4 h-4 border-2 border-[#3B82F6] border-t-transparent rounded-full"></span> 测试中...';
+        result.innerHTML = '';
+
+        var params = new URLSearchParams();
+        params.append('gitlabUrl', gitlabUrl);
+        params.append('authType', authType);
+        params.append('token', token);
+        params.append('username', username);
+        params.append('password', password);
+
+        fetch('/config/project/test-connection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString()
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> 测试连接';
+
+            if (data.success) {
+                result.innerHTML = '<span class="text-[#22C55E]">\u2713 连接成功</span>';
+                connectionTested = true;
+                currentGitlabUrl = gitlabUrl;
+                currentAuthType = authType;
+                currentToken = token;
+                currentUsername = username;
+                currentPassword = password;
+
+                var projectSelect = document.getElementById('projectSelect');
+                projectSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请选择 --</option>';
+                if (data.projects && data.projects.length > 0) {
+                    data.projects.forEach(function(p) {
+                        var opt = document.createElement('option');
+                        opt.value = p.projectId;
+                        opt.textContent = p.projectName + ' (' + p.projectId + ')';
+                        opt.className = 'bg-[#0F172A]';
+                        projectSelect.appendChild(opt);
+                    });
+                }
+                projectSelect.disabled = false;
+                document.getElementById('projectSettingsHint').textContent = '(已连接，请选择项目)';
+            } else {
+                result.innerHTML = '<span class="text-red-400">\u2717 ' + (data.message || '连接失败') + '</span>';
+            }
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> 测试连接';
+            result.innerHTML = '<span class="text-red-400">\u2717 请求失败: ' + err.message + '</span>';
+        });
+    }
+
+    function fetchBranches() {
+        var projectId = document.getElementById('projectSelect').value;
+        var branchSelect = document.getElementById('branchSelect');
+
+        if (!projectId) {
+            branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请先选择项目 --</option>';
+            branchSelect.disabled = true;
+            return;
+        }
+
+        branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">加载中...</option>';
+        branchSelect.disabled = true;
+
+        var params = new URLSearchParams();
+        params.append('gitlabUrl', currentGitlabUrl);
+        params.append('authType', currentAuthType);
+        params.append('token', currentToken);
+        params.append('username', currentUsername);
+        params.append('password', currentPassword);
+        params.append('projectId', projectId);
+
+        fetch('/config/project/branches', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: params.toString()
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success && data.branches) {
+                branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请选择 --</option>';
+                data.branches.forEach(function(b) {
+                    var opt = document.createElement('option');
+                    opt.value = b;
+                    opt.textContent = b;
+                    opt.className = 'bg-[#0F172A]';
+                    branchSelect.appendChild(opt);
+                });
+                branchSelect.disabled = false;
+                document.getElementById('projectSettingsHint').textContent = '(已选择项目，请选择分支)';
+            } else {
+                branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">获取分支失败</option>';
+            }
+        })
+        .catch(function() {
+            branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">获取分支失败</option>';
+        });
+    }
+
+    document.getElementById('projectCode').addEventListener('input', function() {
+        this.dataset.manual = 'true';
+    });
+
+    document.getElementById('gitlabUrl').addEventListener('input', function() {
+        connectionTested = false;
+        resetProjectSettings();
+    });
+</script>
+</body>
+</html>

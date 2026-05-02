@@ -1,285 +1,252 @@
 <!DOCTYPE html>
 <html xmlns:th="http://www.thymeleaf.org">
-<head>
+<head th:replace="fragments/header :: header">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文档生成 - devops-ai</title>
-    <link rel="stylesheet" href="/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/css/app.css">
 </head>
-<body>
+<body class="bg-[#0A0E14] text-[#E2E8F0] min-h-screen antialiased">
 <div th:replace="fragments/sidebar :: sidebar"></div>
-<div class="main-content">
-    <h2 class="mb-4">文档生成</h2>
+<div class="ml-56 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto">
+        <div class="mb-8">
+            <h1 class="text-xl font-semibold text-[#F8FAFC] tracking-tight">文档生成</h1>
+            <p class="text-sm text-[#64748B] mt-1">选择项目配置并生成项目发布文档</p>
+        </div>
 
-    <div class="card">
-        <div class="card-header">生成配置</div>
-        <div class="card-body">
-            <form action="/generate" method="post" th:action="@{/generate}">
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">GitLab 配置</label>
-                        <select name="configId" class="form-select" id="configSelect" required>
-                            <option value="">-- 请选择 GitLab 配置 --</option>
-                            <option th:each="cfg : ${configs}" th:value="${cfg.id}" th:text="${cfg.name}"></option>
-                        </select>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">项目</label>
-                        <select name="projectId" class="form-select" id="projectSelect" required disabled>
-                            <option value="">-- 请先选择 GitLab 配置 --</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">分支</label>
-                        <select name="branch" class="form-select" id="branchSelect">
-                            <option value="">默认分支</option>
-                        </select>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">项目版本</label>
-                        <input type="text" name="projectVersion" class="form-control" placeholder="例如: v1.0.0">
-                    </div>
-                </div>
-
-                <div class="row mb-3">
-                    <div class="col-md-12">
-                        <label class="form-label">筛选方式</label>
-                        <div class="d-flex gap-4">
-                            <div class="form-check">
-                                <input type="radio" name="filterMode" class="form-check-input" id="filterTime" value="time" checked>
-                                <label class="form-check-label" for="filterTime">时间范围</label>
-                            </div>
-                            <div class="form-check">
-                                <input type="radio" name="filterMode" class="form-check-input" id="filterHash" value="hash">
-                                <label class="form-check-label" for="filterHash">Hash 范围</label>
-                            </div>
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B]">
+            <div class="px-6 py-4 border-b border-[#1E293B]">
+                <h3 class="text-sm font-medium text-[#F8FAFC]">生成配置</h3>
+            </div>
+            <div class="p-6">
+                <form action="/generate" method="post" th:action="@{/generate}">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">项目配置</label>
+                            <select name="configId" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="configSelect" required>
+                                <option value="" class="bg-[#0F172A]">-- 请选择项目配置 --</option>
+                                <option th:each="p : ${projects}" th:value="${p.id}" th:text="${p.name}" class="bg-[#0F172A]"></option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">分支</label>
+                            <select name="branch" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="branchSelect">
+                                <option value="" class="bg-[#0F172A]">加载中...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">项目版本</label>
+                            <input type="text" name="projectVersion" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="例如: v1.0.0">
                         </div>
                     </div>
-                </div>
 
-                <div class="row mb-3" id="timeRangeGroup">
-                    <div class="col-md-6">
-                        <label class="form-label">起始时间</label>
-                        <input type="datetime-local" name="since" class="form-control">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">截止时间</label>
-                        <input type="datetime-local" name="until" class="form-control">
-                    </div>
-                </div>
-
-                <div class="row mb-3" id="hashRangeGroup" style="display: none;">
-                    <div class="col-md-6">
-                        <label class="form-label">起始提交 Hash</label>
-                        <input type="text" name="sinceHash" class="form-control" placeholder="可选项">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">截止提交 Hash</label>
-                        <input type="text" name="untilHash" class="form-control" placeholder="可选项">
-                    </div>
-                </div>
-
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">作者筛选</label>
-                        <select name="author" class="form-select" id="authorSelect">
-                            <option value="">全部作者</option>
-                        </select>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">输出格式</label>
-                        <select name="format" class="form-select">
-                            <option value="markdown" th:each="fmt : ${formats}"
-                                    th:value="${fmt}" th:text="${fmt}">-</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <label class="form-label">文档模板</label>
-                        <select name="templateName" class="form-select">
-                            <option value="" th:each="template : ${templates}"
-                                    th:value="${template.name}" th:text="${template.displayName}">-</option>
-                        </select>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">分组维度</label>
-                        <select name="dimensions" class="form-select" multiple>
-                            <option value="" th:each="dim : ${dimensions}"
-                                    th:value="${dim}" th:text="${dim}">-</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="row mb-3">
-                    <div class="col-md-4">
-                        <div class="form-check">
-                            <input type="checkbox" name="incremental" class="form-check-input" id="incremental" value="true">
-                            <label class="form-check-label" for="incremental">增量生成</label>
+                    <div class="mt-5">
+                        <label class="block text-sm font-medium text-[#94A3B8] mb-2">筛选方式</label>
+                        <div class="flex gap-6">
+                            <label class="flex items-center gap-2 text-sm text-[#94A3B8] cursor-pointer">
+                                <input type="radio" name="filterMode" class="w-4 h-4 accent-[#22C55E]" id="filterTime" value="time" checked>
+                                时间范围
+                            </label>
+                            <label class="flex items-center gap-2 text-sm text-[#94A3B8] cursor-pointer">
+                                <input type="radio" name="filterMode" class="w-4 h-4 accent-[#22C55E]" id="filterHash" value="hash">
+                                Hash 范围
+                            </label>
                         </div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="form-check">
-                            <input type="checkbox" name="useAiClassifier" class="form-check-input" id="useAiClassifier" value="true">
-                            <label class="form-check-label" for="useAiClassifier">AI 智能分析</label>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-4" id="timeRangeGroup">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">起始时间</label>
+                            <input type="text" name="since" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="yyyy-MM-dd HH:mm:ss">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">截止时间</label>
+                            <input type="text" name="until" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="yyyy-MM-dd HH:mm:ss">
                         </div>
                     </div>
-                </div>
 
-                <div class="mt-4">
-                    <button type="submit" class="btn btn-primary btn-lg">开始生成</button>
-                </div>
-            </form>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-4" id="hashRangeGroup" style="display: none;">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">起始提交 Hash</label>
+                            <input type="text" name="sinceHash" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="可选项">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">截止提交 Hash</label>
+                            <input type="text" name="untilHash" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="可选项">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-5">
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">作者筛选</label>
+                            <select name="author" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="authorSelect">
+                                <option value="" class="bg-[#0F172A]">全部作者</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">输出格式</label>
+                            <select name="format" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                                <option value="markdown" th:each="fmt : ${formats}" th:value="${fmt}" th:text="${fmt}" class="bg-[#0F172A]"></option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">文档模板</label>
+                            <select name="templateName" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="templateSelect">
+                                <option th:each="template : ${templates}" th:value="${template.name}" th:text="${template.displayName}" class="bg-[#0F172A]"></option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">分组维度</label>
+                            <select name="dimensions" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" multiple>
+                                <option value="" th:each="dim : ${dimensions}" th:value="${dim}" th:text="${dim}" class="bg-[#0F172A]"></option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-6 mt-5">
+                        <label class="flex items-center gap-2 text-sm text-[#94A3B8] cursor-pointer">
+                            <input type="checkbox" name="incremental" class="w-4 h-4 rounded accent-[#22C55E]" value="true">
+                            增量生成
+                        </label>
+                        <label class="flex items-center gap-2 text-sm text-[#94A3B8] cursor-pointer">
+                            <input type="checkbox" name="useAiClassifier" class="w-4 h-4 rounded accent-[#22C55E]" value="true">
+                            AI 智能分析
+                        </label>
+                    </div>
+
+                    <div class="mt-6">
+                        <button type="submit" class="btn-primary inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold border-none cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                            </svg>
+                            开始生成
+                        </button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 </div>
-</body>
+
 <script>
     var configSelect = document.getElementById('configSelect');
-    var projectSelect = document.getElementById('projectSelect');
     var branchSelect = document.getElementById('branchSelect');
     var authorSelect = document.getElementById('authorSelect');
+    var templateSelect = document.getElementById('templateSelect');
 
-    function loadAuthors() {
-        var configId = configSelect.value;
-        var projectId = projectSelect.value;
-
-        authorSelect.innerHTML = '<option value="">加载中...</option>';
-
-        if (!configId) {
-            authorSelect.innerHTML = '<option value="">全部作者</option>';
+    function loadBranches(configId, gitlabProjectId) {
+        branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">加载中...</option>';
+        if (!configId || !gitlabProjectId) {
+            var defaultValue = branchSelect.getAttribute('data-default');
+            branchSelect.innerHTML = '';
+            if (defaultValue) {
+                var opt = document.createElement('option');
+                opt.className = 'bg-[#0F172A]';
+                opt.value = defaultValue;
+                opt.textContent = defaultValue + ' (默认)';
+                opt.selected = true;
+                branchSelect.appendChild(opt);
+            } else {
+                branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请先配置项目 --</option>';
+            }
             return;
         }
+        fetch('/generate/branches?configId=' + configId + '&projectId=' + encodeURIComponent(gitlabProjectId))
+            .then(function(r) { return r.json(); })
+            .then(function(branches) {
+                branchSelect.innerHTML = '';
+                var hasDefault = false;
+                var defaultValue = branchSelect.getAttribute('data-default');
+                for (var i = 0; i < branches.length; i++) {
+                    var opt = document.createElement('option');
+                    opt.className = 'bg-[#0F172A]';
+                    opt.value = branches[i].name;
+                    opt.textContent = branches[i].name;
+                    if (defaultValue && branches[i].name === defaultValue) {
+                        opt.selected = true;
+                        hasDefault = true;
+                    }
+                    branchSelect.appendChild(opt);
+                }
+                if (!hasDefault && defaultValue) {
+                    var opt = document.createElement('option');
+                    opt.className = 'bg-[#0F172A]';
+                    opt.value = defaultValue;
+                    opt.textContent = defaultValue + ' (默认)';
+                    opt.selected = true;
+                    branchSelect.insertBefore(opt, branchSelect.firstChild);
+                }
+            })
+            .catch(function() {
+                branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">加载失败</option>';
+            });
+    }
 
-        var url = '/generate/authors?configId=' + configId;
-        if (projectId) {
-            url += '&projectId=' + encodeURIComponent(projectId);
+    function loadAuthors(configId, gitlabProjectId) {
+        authorSelect.innerHTML = '<option value="" class="bg-[#0F172A]">加载中...</option>';
+        if (!configId) {
+            authorSelect.innerHTML = '<option value="" class="bg-[#0F172A]">全部作者</option>';
+            return;
         }
-
+        var url = '/generate/authors?configId=' + configId;
+        if (gitlabProjectId) url += '&projectId=' + encodeURIComponent(gitlabProjectId);
         fetch(url)
-            .then(function(resp) { return resp.json(); })
+            .then(function(r) { return r.json(); })
             .then(function(authors) {
-                authorSelect.innerHTML = '<option value="">全部作者</option>';
+                authorSelect.innerHTML = '<option value="" class="bg-[#0F172A]">全部作者</option>';
                 for (var i = 0; i < authors.length; i++) {
                     var opt = document.createElement('option');
+                    opt.className = 'bg-[#0F172A]';
                     opt.value = authors[i].name;
                     opt.textContent = authors[i].name + (authors[i].email ? ' (' + authors[i].email + ')' : '');
                     authorSelect.appendChild(opt);
                 }
             })
-            .catch(function(err) {
-                authorSelect.innerHTML = '<option value="">全部作者</option>';
-                console.error(err);
-            });
+            .catch(function() { authorSelect.innerHTML = '<option value="" class="bg-[#0F172A]">全部作者</option>'; });
     }
 
     configSelect.addEventListener('change', function() {
         var configId = this.value;
-        projectSelect.innerHTML = '<option value="">加载中...</option>';
-        projectSelect.disabled = true;
-        branchSelect.innerHTML = '<option value="">默认分支</option>';
-        authorSelect.innerHTML = '<option value="">全部作者</option>';
-
         if (!configId) {
-            projectSelect.innerHTML = '<option value="">-- 请先选择 GitLab 配置 --</option>';
+            branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">-- 请选择项目配置 --</option>';
+            branchSelect.removeAttribute('data-default');
+            authorSelect.innerHTML = '<option value="" class="bg-[#0F172A]">全部作者</option>';
             return;
         }
 
-        fetch('/generate/projects?configId=' + configId)
-            .then(function(resp) { return resp.json(); })
-            .then(function(projects) {
-                projectSelect.innerHTML = '<option value="">-- 请选择项目 --</option>';
-                for (var i = 0; i < projects.length; i++) {
-                    var opt = document.createElement('option');
-                    opt.value = projects[i].projectId;
-                    opt.textContent = projects[i].projectName;
-                    projectSelect.appendChild(opt);
+        fetch('/generate/project-detail/' + configId)
+            .then(function(r) { return r.json(); })
+            .then(function(detail) {
+                if (detail.defaultBranch) {
+                    branchSelect.setAttribute('data-default', detail.defaultBranch);
+                } else {
+                    branchSelect.removeAttribute('data-default');
                 }
-                projectSelect.disabled = false;
-            })
-            .catch(function(err) {
-                projectSelect.innerHTML = '<option value="">加载失败</option>';
-                console.error(err);
-            });
-    });
 
-    projectSelect.addEventListener('change', function() {
-        var configId = configSelect.value;
-        var projectId = this.value;
-        branchSelect.innerHTML = '<option value="">加载中...</option>';
-        authorSelect.innerHTML = '<option value="">全部作者</option>';
-
-        if (!configId || !projectId) {
-            branchSelect.innerHTML = '<option value="">默认分支</option>';
-            return;
-        }
-
-        fetch('/generate/branches?projectId=' + encodeURIComponent(projectId) + '&configId=' + configId)
-            .then(function(resp) { return resp.json(); })
-            .then(function(branches) {
-                branchSelect.innerHTML = '<option value="">默认分支</option>';
-                for (var i = 0; i < branches.length; i++) {
-                    var opt = document.createElement('option');
-                    opt.value = branches[i].name;
-                    opt.textContent = branches[i].name;
-                    branchSelect.appendChild(opt);
+                if (detail.templateName) {
+                    for (var i = 0; i < templateSelect.options.length; i++) {
+                        if (templateSelect.options[i].value === detail.templateName) {
+                            templateSelect.selectedIndex = i;
+                            break;
+                        }
+                    }
                 }
-                loadAuthors();
+
+                loadBranches(configId, detail.projectId);
+                loadAuthors(configId, detail.projectId);
             })
-            .catch(function(err) {
-                branchSelect.innerHTML = '<option value="">默认分支</option>';
-                console.error(err);
+            .catch(function() {
+                branchSelect.innerHTML = '<option value="" class="bg-[#0F172A]">加载失败</option>';
+                authorSelect.innerHTML = '<option value="" class="bg-[#0F172A]">全部作者</option>';
             });
     });
 
     document.querySelectorAll('input[name="filterMode"]').forEach(function(radio) {
         radio.addEventListener('change', function() {
-            var timeGroup = document.getElementById('timeRangeGroup');
-            var hashGroup = document.getElementById('hashRangeGroup');
-            if (this.value === 'time') {
-                timeGroup.style.display = 'flex';
-                hashGroup.style.display = 'none';
-                document.querySelector('input[name="sinceHash"]').value = '';
-                document.querySelector('input[name="untilHash"]').value = '';
-            } else {
-                timeGroup.style.display = 'none';
-                hashGroup.style.display = 'flex';
-                document.querySelector('input[name="since"]').value = '';
-                document.querySelector('input[name="until"]').value = '';
-            }
-        });
-    });
-
-    document.getElementById('incremental').addEventListener('change', function() {
-    });
-
-    document.querySelector('form').addEventListener('submit', function() {
-        var filterMode = document.querySelector('input[name="filterMode"]:checked');
-        if (filterMode) {
-            if (filterMode.value === 'hash') {
-                document.querySelector('input[name="since"]').value = '';
-                document.querySelector('input[name="until"]').value = '';
-            } else {
-                document.querySelector('input[name="sinceHash"]').value = '';
-                document.querySelector('input[name="untilHash"]').value = '';
-            }
-        }
-
-        var since = document.querySelector('input[name="since"]');
-        var until = document.querySelector('input[name="until"]');
-        [since, until].forEach(function(input) {
-            if (!input.value) return;
-            input.value = input.value.replace('T', ' ');
-            if (input.value.indexOf(':') > 0) {
-                var parts = input.value.split(':');
-                if (parts.length < 3) { input.value += ':00'; }
-            }
+            document.getElementById('timeRangeGroup').style.display = this.value === 'time' ? '' : 'none';
+            document.getElementById('hashRangeGroup').style.display = this.value === 'hash' ? '' : 'none';
         });
     });
 </script>
+</body>
 </html>

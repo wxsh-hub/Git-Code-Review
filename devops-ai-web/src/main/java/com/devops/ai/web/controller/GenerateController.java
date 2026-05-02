@@ -4,15 +4,10 @@ import com.devops.ai.core.generator.DocumentRequest;
 import com.devops.ai.core.generator.GenerationOrchestrator;
 import com.devops.ai.core.gitlab.AuthManager;
 import com.devops.ai.core.gitlab.GitCloneService;
-import com.devops.ai.core.gitlab.GitLabService;
 import com.devops.ai.core.model.AuthorInfo;
 import com.devops.ai.core.model.Branch;
-import com.devops.ai.core.model.ProjectInfo;
 import com.devops.ai.core.template.TemplateService;
-import com.devops.ai.infrastructure.entity.GitLabConfig;
 import com.devops.ai.infrastructure.entity.ProjectConfig;
-import com.devops.ai.infrastructure.repository.GitLabConfigRepository;
-import com.devops.ai.infrastructure.repository.GenerationLogRepository;
 import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import cn.hutool.core.util.StrUtil;
 import org.gitlab4j.api.GitLabApi;
@@ -32,24 +27,18 @@ public class GenerateController {
 
     private static final Logger log = LoggerFactory.getLogger(GenerateController.class);
 
-    private final GitLabConfigRepository gitLabConfigRepository;
     private final ProjectConfigRepository projectConfigRepository;
-    private final GitLabService gitLabService;
     private final GenerationOrchestrator orchestrator;
     private final TemplateService templateService;
     private final AuthManager authManager;
     private final GitCloneService gitCloneService;
 
-    public GenerateController(GitLabConfigRepository gitLabConfigRepository,
-                              ProjectConfigRepository projectConfigRepository,
-                              GitLabService gitLabService,
+    public GenerateController(ProjectConfigRepository projectConfigRepository,
                               GenerationOrchestrator orchestrator,
                               TemplateService templateService,
                               AuthManager authManager,
                               GitCloneService gitCloneService) {
-        this.gitLabConfigRepository = gitLabConfigRepository;
         this.projectConfigRepository = projectConfigRepository;
-        this.gitLabService = gitLabService;
         this.orchestrator = orchestrator;
         this.templateService = templateService;
         this.authManager = authManager;
@@ -58,9 +47,9 @@ public class GenerateController {
 
     @GetMapping
     public String generatePage(Model model) {
-        List<GitLabConfig> configs = gitLabConfigRepository.findByActiveTrue();
+        List<ProjectConfig> projects = projectConfigRepository.findByActiveTrue();
 
-        model.addAttribute("configs", configs);
+        model.addAttribute("projects", projects);
         model.addAttribute("templates", templateService.getAllTemplates());
         model.addAttribute("formats", new String[]{"markdown", "html"});
         model.addAttribute("dimensions", new String[]{"author", "time", "project"});
@@ -68,53 +57,35 @@ public class GenerateController {
         return "generate";
     }
 
-    @GetMapping("/projects")
+    @GetMapping("/project-detail/{id}")
     @ResponseBody
-    public List<Map<String, Object>> getProjects(@RequestParam Long configId) {
+    public Map<String, Object> getProjectDetail(@PathVariable Long id) {
+        Map<String, Object> result = new LinkedHashMap<>();
         try {
-            List<ProjectConfig> dbProjects = projectConfigRepository.findByGitlabConfigId(configId);
-            if (!dbProjects.isEmpty()) {
-                return dbProjects.stream().map(p -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("projectId", p.getProjectId());
-                    m.put("projectName", p.getProjectName());
-                    return m;
-                }).collect(Collectors.toList());
-            }
-
-            GitLabConfig config = gitLabConfigRepository.findById(configId).orElse(null);
+            ProjectConfig config = projectConfigRepository.findById(id).orElse(null);
             if (config == null) {
-                return Collections.emptyList();
+                result.put("error", "Project config not found");
+                return result;
             }
-
-            if ("clone".equals(config.getConnectMode())) {
-                ProjectInfo info = gitCloneService.getProjectInfo(config);
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("projectId", info.getName());
-                m.put("projectName", info.getName());
-                return Collections.singletonList(m);
-            }
-
-            GitLabApi api = authManager.createApi(config);
-            List<org.gitlab4j.api.models.Project> projects = api.getProjectApi().getProjects();
-            return projects.stream().map(p -> {
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("projectId", String.valueOf(p.getId()));
-                m.put("projectName", p.getName());
-                return m;
-            }).collect(Collectors.toList());
-
+            result.put("id", config.getId());
+            result.put("name", config.getName());
+            result.put("projectId", config.getProjectId());
+            result.put("defaultBranch", config.getDefaultBranch());
+            result.put("templateName", config.getTemplateName() != null ? config.getTemplateName() : "standard");
+            result.put("gitlabUrl", config.getGitlabUrl());
+            result.put("connectMode", config.getConnectMode());
         } catch (Exception e) {
-            log.error("Failed to fetch projects for config {}: {}", configId, e.getMessage(), e);
-            return Collections.emptyList();
+            log.error("Failed to get project detail: {}", e.getMessage(), e);
+            result.put("error", e.getMessage());
         }
+        return result;
     }
 
     @GetMapping("/branches")
     @ResponseBody
     public List<Branch> getBranches(@RequestParam String projectId, @RequestParam Long configId) {
         try {
-            GitLabConfig config = gitLabConfigRepository.findById(configId).orElse(null);
+            ProjectConfig config = projectConfigRepository.findById(configId).orElse(null);
             if (config == null) {
                 return Collections.emptyList();
             }
@@ -137,7 +108,7 @@ public class GenerateController {
     public List<AuthorInfo> getAuthors(@RequestParam Long configId,
                                        @RequestParam(required = false) String projectId) {
         try {
-            GitLabConfig config = gitLabConfigRepository.findById(configId).orElse(null);
+            ProjectConfig config = projectConfigRepository.findById(configId).orElse(null);
             if (config == null) {
                 return Collections.emptyList();
             }
@@ -174,59 +145,37 @@ public class GenerateController {
                                    @ModelAttribute DocumentRequest request,
                                    RedirectAttributes redirectAttributes) {
         try {
-            GitLabConfig config = gitLabConfigRepository.findById(configId).orElse(null);
-            if (config == null) {
-                redirectAttributes.addFlashAttribute("error", "GitLab配置不存在");
+            ProjectConfig project = projectConfigRepository.findById(configId).orElse(null);
+            if (project == null) {
+                redirectAttributes.addFlashAttribute("error", "Project config not found");
                 return "redirect:/generate";
             }
 
             boolean hasTimeParams = StrUtil.isNotBlank(request.getSince()) || StrUtil.isNotBlank(request.getUntil());
             boolean hasHashParams = StrUtil.isNotBlank(request.getSinceHash()) || StrUtil.isNotBlank(request.getUntilHash());
             if (hasTimeParams && hasHashParams) {
-                redirectAttributes.addFlashAttribute("error", "时间范围和Hash范围不能同时使用，请选择其中一种筛选方式");
+                redirectAttributes.addFlashAttribute("error", "Time range and hash range cannot be used together");
                 return "redirect:/generate";
             }
 
+            request.setProjectId(project.getProjectId());
             if (request.getProjectName() == null || request.getProjectName().isEmpty()) {
-                if ("clone".equals(config.getConnectMode())) {
-                    ProjectInfo info = gitCloneService.getProjectInfo(config);
-                    request.setProjectName(info.getName());
-                } else {
-                    List<ProjectConfig> dbProjects = projectConfigRepository.findByGitlabConfigId(configId);
-                    if (!dbProjects.isEmpty()) {
-                        for (ProjectConfig p : dbProjects) {
-                            if (p.getProjectId().equals(request.getProjectId())) {
-                                request.setProjectName(p.getProjectName());
-                                break;
-                            }
-                        }
-                    }
-                    if (request.getProjectName() == null) {
-                        request.setProjectName(request.getProjectId());
-                    }
-                }
+                request.setProjectName(project.getName());
+            }
+            if (StrUtil.isBlank(request.getBranch())) {
+                request.setBranch(project.getDefaultBranch());
             }
 
             if (StrUtil.isBlank(request.getUntil())) {
                 request.setUntil(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()));
             }
 
-            List<GitLabConfig> allConfigs = gitLabConfigRepository.findAll();
-            for (GitLabConfig c : allConfigs) {
-                boolean isSelected = c.getId().equals(configId);
-                if (c.getActive() != isSelected) {
-                    c.setActive(isSelected);
-                    gitLabConfigRepository.save(c);
-                }
-            }
-            log.info("Switched active GitLab config to id={}", configId);
-
             String taskId = orchestrator.submitGeneration(request);
             log.info("Document generation task submitted: {}", taskId);
             return "redirect:/history?taskId=" + taskId;
         } catch (Exception e) {
             log.error("Failed to submit generation task: {}", e.getMessage(), e);
-            redirectAttributes.addFlashAttribute("error", "文档生成任务提交失败: " + e.getMessage());
+            redirectAttributes.addFlashAttribute("error", "Document generation failed: " + e.getMessage());
             return "redirect:/generate";
         }
     }

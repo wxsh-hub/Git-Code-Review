@@ -1,205 +1,231 @@
 <!DOCTYPE html>
 <html xmlns:th="http://www.thymeleaf.org">
-<head>
+<head th:replace="fragments/header :: header">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>模板管理 - devops-ai</title>
-    <link rel="stylesheet" href="/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/css/app.css">
 </head>
-<body>
+<body class="bg-[#0A0E14] text-[#E2E8F0] min-h-screen antialiased">
 <div th:replace="fragments/sidebar :: sidebar"></div>
-<div class="main-content">
-    <h2 class="mb-4">模板管理</h2>
-
-    <div th:if="${message}" class="alert alert-success" th:text="${message}"></div>
-    <div th:if="${error}" class="alert alert-danger" th:text="${error}"></div>
-
-    <div class="card">
-        <div class="card-header">
-            <span>文档模板列表</span>
-            <button class="btn btn-sm btn-primary float-end" onclick="openEdit(null)">新增自定义模板</button>
-        </div>
-        <div class="card-body">
-            <table class="table">
-                <thead>
-                <tr>
-                    <th>模板名称</th>
-                    <th>显示名称</th>
-                    <th>描述</th>
-                    <th>类型</th>
-                    <th>操作</th>
-                </tr>
-                </thead>
-                <tbody>
-                <tr th:each="template : ${templates}">
-                    <td th:text="${template.name}">-</td>
-                    <td th:text="${template.displayName}">-</td>
-                    <td th:text="${template.description}">-</td>
-                    <td>
-                        <span class="badge" th:classappend="${template.builtIn} ? 'bg-secondary' : 'bg-primary'"
-                              th:text="${template.builtIn} ? '内置' : '自定义'">-</span>
-                    </td>
-                    <td>
-                        <button class="btn btn-sm btn-info edit-btn" th:data-name="${template.name}">修改</button>
-                        <button class="btn btn-sm btn-secondary preview-btn" th:data-name="${template.name}">预览</button>
-                        <form action="/templates/delete" method="post" style="display:inline"
-                              th:if="${not template.builtIn}">
-                            <input type="hidden" name="name" th:value="${template.name}">
-                            <button type="submit" class="btn btn-sm btn-danger">删除</button>
-                        </form>
-                        <form th:action="@{/templates/reset/{name}(name=${template.name})}" method="post" style="display:inline"
-                              th:if="${template.builtIn}">
-                            <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('确认恢复为系统默认内容？')">恢复默认</button>
-                        </form>
-                    </td>
-                </tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div class="card mt-4">
-        <div class="card-header">模板变量说明</div>
-        <div class="card-body">
-            <table class="table">
-                <thead>
-                <tr>
-                    <th>变量名</th>
-                    <th>类型</th>
-                    <th>说明</th>
-                </tr>
-                </thead>
-                <tbody>
-                <tr><td>${projectName}</td><td>String</td><td>项目名称</td></tr>
-                <tr><td>${projectVersion}</td><td>String</td><td>项目版本号</td></tr>
-                <tr><td>${branch}</td><td>String</td><td>分支名称</td></tr>
-                <tr><td>${buildTime}</td><td>String</td><td>构建/生成时间</td></tr>
-                <tr><td>${dateRange}</td><td>String</td><td>时间范围</td></tr>
-                <tr><td>${categories}</td><td>String</td><td>分类内容（自动渲染）</td></tr>
-                <tr><td>${totalCommits}</td><td>int</td><td>提交总数</td></tr>
-                <tr><td>${totalAuthors}</td><td>int</td><td>参与开发者数</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-
-<div class="modal fade" id="editModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="editModalTitle">编辑模板</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+<div class="ml-56 min-h-screen p-8">
+    <div class="max-w-6xl mx-auto">
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-xl font-semibold text-[#F8FAFC] tracking-tight">模板管理</h1>
+                <p class="text-sm text-[#64748B] mt-1">管理文档生成模板</p>
             </div>
-            <form action="/templates/save" method="post">
-                <div class="modal-body">
-                    <input type="hidden" name="builtIn" value="false">
-                    <div class="mb-3">
-                        <label class="form-label">模板名称</label>
-                        <input type="text" name="name" id="editName" class="form-control" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">显示名称</label>
-                        <input type="text" name="displayName" id="editDisplayName" class="form-control" required>
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">描述</label>
-                        <input type="text" name="description" id="editDescription" class="form-control">
-                    </div>
-                    <div class="mb-3">
-                        <label class="form-label">模板内容</label>
-                        <textarea name="content" id="editContent" class="form-control" rows="10" style="font-family: monospace;" required></textarea>
-                    </div>
-                    <div class="mb-3">
-                        <button type="button" class="btn btn-secondary" onclick="doPreview()">预览模板</button>
-                    </div>
-                    <div class="mb-3" id="previewArea" style="display:none;">
-                        <label class="form-label">预览结果</label>
-                        <div id="previewContent" class="border p-3" style="background:#f8f9fa;white-space:pre-wrap;font-family: monospace;max-height:300px;overflow-y:auto;"></div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                    <button type="submit" class="btn btn-primary">保存</button>
-                </div>
-            </form>
+            <button class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold border-none cursor-pointer" onclick="openEdit(null)">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                </svg>
+                新增自定义模板
+            </button>
+        </div>
+
+        <div th:if="${message}" class="mb-4 px-4 py-3 rounded-lg bg-[#22C55E]/10 border border-[#22C55E]/20 text-sm text-[#22C55E]" th:text="${message}"></div>
+        <div th:if="${error}" class="mb-4 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-400" th:text="${error}"></div>
+
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B]">
+            <div class="px-6 py-4 border-b border-[#1E293B]">
+                <h3 class="text-sm font-medium text-[#F8FAFC]">文档模板列表</h3>
+            </div>
+            <div class="p-6">
+                <table class="w-full">
+                    <thead>
+                        <tr class="text-left">
+                            <th class="pb-3 pr-4 text-[#64748B]">模板名称</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">显示名称</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">描述</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">类型</th>
+                            <th class="pb-3 text-[#64748B]">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr th:each="template : ${templates}" class="border-t border-[#1E293B] fade-in">
+                            <td class="py-3 pr-4 text-sm text-[#94A3B8] font-mono" th:text="${template.name}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#E2E8F0]" th:text="${template.displayName}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#64748B]" th:text="${template.description}">-</td>
+                            <td class="py-3 pr-4">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+                                      th:classappend="${template.builtIn} ? 'bg-[#64748B]/10 text-[#64748B]' : 'bg-[#22C55E]/10 text-[#22C55E]'"
+                                      th:text="${template.builtIn} ? '内置' : '自定义'">-</span>
+                            </td>
+                            <td class="py-3">
+                                <div class="flex gap-2">
+                                    <button class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#1E293B] text-xs text-[#94A3B8] cursor-pointer bg-transparent hover:text-[#F8FAFC] edit-btn" th:data-name="${template.name}">修改</button>
+                                    <button class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#1E293B] text-xs text-[#94A3B8] cursor-pointer bg-transparent hover:text-[#F8FAFC] preview-btn" th:data-name="${template.name}">预览</button>
+                                    <form action="/templates/delete" method="post" style="display:inline" th:if="${not template.builtIn}">
+                                        <input type="hidden" name="name" th:value="${template.name}">
+                                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-500/20 text-xs text-red-400 cursor-pointer bg-transparent hover:bg-red-500/10">删除</button>
+                                    </form>
+                                    <form th:action="@{/templates/reset/{name}(name=${template.name})}" method="post" style="display:inline" th:if="${template.builtIn}">
+                                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-yellow-500/20 text-xs text-yellow-400 cursor-pointer bg-transparent hover:bg-yellow-500/10" onclick="return confirm('确认恢复为系统默认内容？')">恢复默认</button>
+                                    </form>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B] mt-5">
+            <div class="px-6 py-4 border-b border-[#1E293B]">
+                <h3 class="text-sm font-medium text-[#F8FAFC]">模板变量说明</h3>
+            </div>
+            <div class="p-6">
+                <table class="w-full">
+                    <thead>
+                        <tr class="text-left">
+                            <th class="pb-3 pr-4 text-[#64748B]">变量名</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">类型</th>
+                            <th class="pb-3 text-[#64748B]">说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${projectName}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">String</td><td class="py-3 text-sm text-[#E2E8F0]">项目名称</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${projectVersion}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">String</td><td class="py-3 text-sm text-[#E2E8F0]">项目版本号</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${branch}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">String</td><td class="py-3 text-sm text-[#E2E8F0]">分支名称</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${buildTime}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">String</td><td class="py-3 text-sm text-[#E2E8F0]">构建/生成时间</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${dateRange}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">String</td><td class="py-3 text-sm text-[#E2E8F0]">时间范围</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${categories}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">String</td><td class="py-3 text-sm text-[#E2E8F0]">分类内容（自动渲染）</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${totalCommits}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">int</td><td class="py-3 text-sm text-[#E2E8F0]">提交总数</td></tr>
+                        <tr class="border-t border-[#1E293B]"><td class="py-3 pr-4 text-sm text-[#22C55E] font-mono">${totalAuthors}</td><td class="py-3 pr-4 text-sm text-[#94A3B8]">int</td><td class="py-3 text-sm text-[#E2E8F0]">参与开发者数</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 </div>
 
-<script src="/js/bootstrap.bundle.min.js"></script>
-<script>
-var editModal = null;
-document.addEventListener('DOMContentLoaded', function() {
-    editModal = new bootstrap.Modal(document.getElementById('editModal'));
+<div class="fixed inset-0 z-50 flex items-center justify-center" id="editModal" style="display:none;">
+    <div class="modal-overlay fixed inset-0 bg-black/60" onclick="closeEdit()"></div>
+    <div class="relative bg-[#0F172A] rounded-xl border border-[#1E293B] w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+        <div class="px-6 py-4 border-b border-[#1E293B] flex items-center justify-between">
+            <h5 class="text-sm font-medium text-[#F8FAFC]" id="editModalTitle">编辑模板</h5>
+            <button class="text-[#64748B] hover:text-[#F8FAFC] bg-transparent border-none cursor-pointer" onclick="closeEdit()">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <form action="/templates/save" method="post" class="p-6">
+            <input type="hidden" name="builtIn" value="false">
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">模板名称</label>
+                    <input type="text" name="name" id="editName" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">显示名称</label>
+                    <input type="text" name="displayName" id="editDisplayName" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">描述</label>
+                    <input type="text" name="description" id="editDescription" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">模板内容</label>
+                    <textarea name="content" id="editContent" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none font-mono" rows="10" required></textarea>
+                </div>
+                <div>
+                    <button type="button" class="btn-ghost inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#1E293B] text-sm text-[#94A3B8] cursor-pointer bg-transparent hover:text-[#F8FAFC]" onclick="doPreview()">预览模板</button>
+                </div>
+                <div id="previewArea" style="display:none;">
+                    <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">预览结果</label>
+                    <div id="previewContent" class="bg-[#0A0E14] border border-[#1E293B] rounded-lg p-4 text-sm text-[#E2E8F0] font-mono whitespace-pre-wrap max-h-60 overflow-y-auto"></div>
+                </div>
+            </div>
+            <div class="flex gap-3 mt-6 pt-4 border-t border-[#1E293B]">
+                <button type="button" class="btn-ghost inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#1E293B] text-sm text-[#94A3B8] cursor-pointer bg-transparent hover:text-[#F8FAFC]" onclick="closeEdit()">取消</button>
+                <button type="submit" class="btn-primary inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold border-none cursor-pointer">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
 
-    document.querySelector('.card-body .table').addEventListener('click', function(e) {
-        var target = e.target;
+<script>
+    var editModal = document.getElementById('editModal');
+
+    document.addEventListener('DOMContentLoaded', function() {
+        var tableBody = document.querySelector('.card-body .table tbody');
+        if (!tableBody) {
+            document.querySelectorAll('.edit-btn, .preview-btn').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    var name = e.target.getAttribute('data-name');
+                    if (e.target.classList.contains('edit-btn')) openEdit(name);
+                    else if (e.target.classList.contains('preview-btn')) previewTemplate(name);
+                });
+            });
+        }
+    });
+
+    document.querySelector('.card-body .table') && document.querySelector('.card-body .table').addEventListener('click', function(e) {
+        var target = e.target.closest('button');
+        if (!target) return;
         if (target.classList.contains('edit-btn')) {
             openEdit(target.getAttribute('data-name'));
         } else if (target.classList.contains('preview-btn')) {
             previewTemplate(target.getAttribute('data-name'));
         }
     });
-});
 
-function openEdit(name) {
-    document.getElementById('previewArea').style.display = 'none';
-    if (name) {
-        document.getElementById('editModalTitle').textContent = '编辑模板 - ' + name;
+    function openEdit(name) {
+        document.getElementById('previewArea').style.display = 'none';
+        if (name) {
+            document.getElementById('editModalTitle').textContent = '编辑模板 - ' + name;
+            fetch('/templates/' + encodeURIComponent(name))
+                .then(function(r) { return r.json(); })
+                .then(function(t) {
+                    document.getElementById('editName').value = t.name;
+                    document.getElementById('editName').readOnly = t.builtIn;
+                    document.getElementById('editDisplayName').value = t.displayName;
+                    document.getElementById('editDescription').value = t.description || '';
+                    document.getElementById('editContent').value = t.content;
+                    editModal.style.display = 'flex';
+                })
+                .catch(function(e) { alert('加载模板失败: ' + e.message); });
+        } else {
+            document.getElementById('editModalTitle').textContent = '新增自定义模板';
+            document.getElementById('editName').value = '';
+            document.getElementById('editName').readOnly = false;
+            document.getElementById('editDisplayName').value = '';
+            document.getElementById('editDescription').value = '';
+            document.getElementById('editContent').value = '# ${projectName} 更新日志\n\n${categories}';
+            editModal.style.display = 'flex';
+        }
+    }
+
+    function closeEdit() {
+        editModal.style.display = 'none';
+    }
+
+    function doPreview() {
+        var content = document.getElementById('editContent').value;
+        if (!content) { alert('请先输入模板内容'); return; }
+        document.getElementById('previewArea').style.display = 'none';
+        var formData = new URLSearchParams();
+        formData.append('content', content);
+        fetch('/templates/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: formData.toString()
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('previewContent').textContent = data.content;
+            document.getElementById('previewArea').style.display = '';
+        })
+        .catch(function(e) { alert('预览失败: ' + e.message); });
+    }
+
+    function previewTemplate(name) {
         fetch('/templates/' + encodeURIComponent(name))
             .then(function(r) { return r.json(); })
             .then(function(t) {
-                document.getElementById('editName').value = t.name;
-                document.getElementById('editName').readOnly = t.builtIn;
-                document.getElementById('editDisplayName').value = t.displayName;
-                document.getElementById('editDescription').value = t.description || '';
                 document.getElementById('editContent').value = t.content;
-                if (editModal) { editModal.show(); } else { alert('请先加载 Bootstrap'); }
+                doPreview();
             })
             .catch(function(e) { alert('加载模板失败: ' + e.message); });
-    } else {
-        document.getElementById('editModalTitle').textContent = '新增自定义模板';
-        document.getElementById('editName').value = '';
-        document.getElementById('editName').readOnly = false;
-        document.getElementById('editDisplayName').value = '';
-        document.getElementById('editDescription').value = '';
-        document.getElementById('editContent').value = '# ${projectName} 更新日志\n\n${categories}';
-        if (editModal) { editModal.show(); } else { alert('请先加载 Bootstrap'); }
     }
-}
-
-function doPreview() {
-    var content = document.getElementById('editContent').value;
-    if (!content) { alert('请先输入模板内容'); return; }
-    document.getElementById('previewArea').style.display = 'none';
-
-    var formData = new URLSearchParams();
-    formData.append('content', content);
-
-    fetch('/templates/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: formData.toString()
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        document.getElementById('previewContent').textContent = data.content;
-        document.getElementById('previewArea').style.display = '';
-    })
-    .catch(function(e) { alert('预览失败: ' + e.message); });
-}
-
-function previewTemplate(name) {
-    fetch('/templates/' + encodeURIComponent(name))
-        .then(function(r) { return r.json(); })
-        .then(function(t) {
-            document.getElementById('editContent').value = t.content;
-            doPreview();
-        })
-        .catch(function(e) { alert('加载模板失败: ' + e.message); });
-}
 </script>
 </body>
 </html>

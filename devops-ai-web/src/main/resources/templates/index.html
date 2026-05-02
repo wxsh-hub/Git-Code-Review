@@ -1,60 +1,99 @@
 <!DOCTYPE html>
-<html xmlns:th="http://www.thymeleaf.org">
-<head>
+<html xmlns:th="http://www.thymeleaf.org" class="bg-[#0A0E14]">
+<head th:replace="fragments/header :: header">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>devops-ai - 仪表盘</title>
-    <link rel="stylesheet" href="/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/css/app.css">
+    <title>仪表盘 - devops-ai</title>
 </head>
-<body>
+<body class="bg-[#0A0E14] text-[#E2E8F0] min-h-screen antialiased">
 <div th:replace="fragments/sidebar :: sidebar"></div>
-<div class="main-content">
-    <h2 class="mb-4">仪表盘</h2>
-
-    <div class="row">
-        <div class="col-md-4">
-            <div class="card stat-card">
-                <div class="stat-number" th:text="${configCount}">0</div>
-                <div class="stat-label">GitLab 配置数</div>
+<div class="ml-56 min-h-screen p-8">
+    <div class="max-w-7xl mx-auto">
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-xl font-semibold text-[#F8FAFC] tracking-tight">仪表盘</h1>
+                <p class="text-sm text-[#64748B] mt-1">系统概览与快速操作</p>
             </div>
         </div>
-        <div class="col-md-8">
-            <div class="card">
-                <div class="card-header">快速操作</div>
-                <div class="card-body">
-                    <a href="/generate" class="btn btn-primary me-2">生成文档</a>
-                    <a href="/config/gitlab" class="btn btn-secondary me-2">配置 GitLab</a>
-                    <a href="/config/ai" class="btn btn-secondary">配置 AI</a>
+
+        <div class="grid grid-cols-12 gap-5">
+            <div class="col-span-12 lg:col-span-4">
+                <div class="bg-[#0F172A] rounded-xl border border-[#1E293B] p-6 card-hover">
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="w-10 h-10 rounded-lg bg-[#22C55E]/10 flex items-center justify-center">
+                            <svg class="w-5 h-5 text-[#22C55E]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            </svg>
+                        </div>
+                        <span class="text-sm font-medium text-[#94A3B8]">GitLab 配置</span>
+                    </div>
+                    <div class="text-4xl font-bold text-[#F8FAFC] tracking-tight" th:text="${configCount}">0</div>
+                    <div class="mt-2 text-xs text-[#64748B]">已激活的配置数量</div>
+                </div>
+            </div>
+
+            <div class="col-span-12 lg:col-span-8">
+                <div class="bg-[#0F172A] rounded-xl border border-[#1E293B] p-6 h-full">
+                    <h3 class="text-sm font-medium text-[#94A3B8] mb-4">快速操作</h3>
+                    <div class="flex flex-wrap gap-3">
+                        <a href="/generate" class="btn-primary inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-medium no-underline">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            生成文档
+                        </a>
+                        <a href="/config/gitlab" class="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#1E293B] text-[#94A3B8] text-sm font-medium no-underline hover:text-[#F8FAFC]">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            </svg>
+                            配置 GitLab
+                        </a>
+                        <a href="/config/ai" class="btn-ghost inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#1E293B] text-[#94A3B8] text-sm font-medium no-underline hover:text-[#F8FAFC]">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7a4 4 0 11-8 0 4 4 0 018 0zM3 21a6 6 0 0112 0H3zM18 9v6m-3-3h6"/>
+                            </svg>
+                            配置 AI
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <div class="card mt-4">
-        <div class="card-header">最近生成记录</div>
-        <div class="card-body">
-            <table class="table" th:if="${not #lists.isEmpty(recentLogs)}">
-                <thead>
-                <tr>
-                    <th>任务 ID</th>
-                    <th>项目</th>
-                    <th>状态</th>
-                    <th>格式</th>
-                    <th>时间</th>
-                </tr>
-                </thead>
-                <tbody>
-                <tr th:each="log : ${recentLogs}">
-                    <td th:text="${log.taskId}">-</td>
-                    <td th:text="${log.projectId}">-</td>
-                    <td><span class="badge" th:classappend="${log.status == 'completed'} ? 'bg-success' : (${log.status} == 'failed' ? 'bg-danger' : 'bg-warning')" th:text="${log.status}">-</span></td>
-                    <td th:text="${log.format}">-</td>
-                    <td th:text="${log.createdAt}">-</td>
-                </tr>
-                </tbody>
-            </table>
-            <p th:unless="${not #lists.isEmpty(recentLogs)}" class="text-muted">暂无生成记录</p>
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B] mt-5">
+            <div class="px-6 py-4 border-b border-[#1E293B] flex items-center justify-between">
+                <h3 class="text-sm font-medium text-[#F8FAFC]">最近生成记录</h3>
+                <span class="text-xs text-[#64748B]">最近 10 条</span>
+            </div>
+            <div class="p-6">
+                <table class="w-full" th:if="${not #lists.isEmpty(recentLogs)}">
+                    <thead>
+                        <tr class="text-left">
+                            <th class="pb-3 pr-4 text-[#64748B]">任务 ID</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">项目</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">状态</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">格式</th>
+                            <th class="pb-3 text-[#64748B]">时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr th:each="log : ${recentLogs}" class="border-t border-[#1E293B] fade-in">
+                            <td class="py-3 pr-4 text-sm text-[#94A3B8] font-mono" th:text="${log.taskId}">-</td>
+                            <td class="py-3 pr-4 text-sm text-[#E2E8F0]" th:text="${log.projectId}">-</td>
+                            <td class="py-3 pr-4">
+                                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+                                      th:classappend="${log.status == 'completed'} ? 'bg-[#22C55E]/10 text-[#22C55E]' :
+                                      (${log.status} == 'failed' ? 'bg-red-500/10 text-red-400' : 'bg-yellow-500/10 text-yellow-400')"
+                                      th:text="${log.status}">-</span>
+                            </td>
+                            <td class="py-3 pr-4 text-sm text-[#94A3B8]" th:text="${log.format}">-</td>
+                            <td class="py-3 text-sm text-[#64748B]" th:text="${log.createdAt}">-</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p th:unless="${not #lists.isEmpty(recentLogs)}" class="text-sm text-[#64748B] text-center py-8">暂无生成记录</p>
+            </div>
         </div>
     </div>
 </div>

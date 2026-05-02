@@ -1,99 +1,104 @@
 <!DOCTYPE html>
-<html xmlns:th="http://www.thymeleaf.org">
-<head>
+<html xmlns:th="http://www.thymeleaf.org" class="bg-[#0A0E14]">
+<head th:replace="fragments/header :: header">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>初始化向导 - devops-ai</title>
-    <link rel="stylesheet" href="/css/bootstrap.min.css">
-    <link rel="stylesheet" href="/css/app.css">
 </head>
-<body class="bg-light">
-<div class="container mt-5">
-    <div class="row justify-content-center">
-        <div class="col-md-8">
-            <div class="text-center mb-4">
-                <h1>devops-ai</h1>
-                <p class="text-muted">通用项目发布文档生成工具</p>
+<body class="bg-[#0A0E14] text-[#E2E8F0] min-h-screen antialiased">
+<div class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-lg">
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-[#22C55E] mb-4">
+                <svg class="w-6 h-6 text-[#0F172A]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+            </div>
+            <h1 class="text-2xl font-semibold text-[#F8FAFC] tracking-tight">devops-ai</h1>
+            <p class="text-sm text-[#64748B] mt-1">通用项目发布文档生成工具</p>
+        </div>
+
+        <div class="bg-[#0F172A] rounded-xl border border-[#1E293B] p-8">
+            <div class="text-center mb-6">
+                <div class="inline-flex items-center justify-center w-10 h-10 rounded-full bg-[#22C55E] text-[#0F172A] font-semibold text-sm mb-3">1</div>
+                <h4 class="text-base font-medium text-[#F8FAFC]">GitLab 配置</h4>
+                <p class="text-xs text-[#64748B] mt-1">配置 GitLab 连接信息，用于获取提交日志</p>
             </div>
 
-            <div class="card">
-                <div class="card-body wizard-step">
-                    <div class="text-center">
-                        <div class="step-number">1</div>
-                        <h4>GitLab 配置</h4>
-                        <p class="text-muted">请配置 GitLab 连接信息，用于获取提交日志</p>
+            <div th:if="${error}" class="mb-4 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-sm text-red-400" th:text="${error}"></div>
+            <div th:if="${warning}" class="mb-4 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-sm text-yellow-400" th:text="${warning}"></div>
+            <div th:if="${message}" class="mb-4 px-4 py-3 rounded-lg bg-[#22C55E]/10 border border-[#22C55E]/20 text-sm text-[#22C55E]" th:text="${message}"></div>
+
+            <form action="/setup/gitlab" method="post" th:action="@{/setup/gitlab}">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">配置名称</label>
+                        <input type="text" name="name" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="例如: 公司GitLab" required>
                     </div>
 
-                    <div th:if="${error}" class="alert alert-danger" th:text="${error}"></div>
-                    <div th:if="${warning}" class="alert alert-warning" th:text="${warning}"></div>
-                    <div th:if="${message}" class="alert alert-success" th:text="${message}"></div>
+                    <div>
+                        <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">连接方式</label>
+                        <select name="connectMode" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="connectMode">
+                            <option value="clone" selected class="bg-[#0F172A]">克隆模式 (用户名+密码, 适用于 GitLab CE v18.x)</option>
+                            <option value="api" class="bg-[#0F172A]">API 模式 (需 Personal Access Token)</option>
+                        </select>
+                    </div>
 
-                    <form action="/setup/gitlab" method="post" th:action="@{/setup/gitlab}">
-                        <div class="mb-3">
-                            <label class="form-label">配置名称</label>
-                            <input type="text" name="name" class="form-control" placeholder="例如: 公司GitLab" required>
+                    <div id="cloneModeFields">
+                        <div class="px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-xs text-yellow-400 mb-4">
+                            <strong class="font-medium">推荐</strong>：GitLab CE v18.x 默认禁用密码 API 认证，使用克隆模式可通过 Git 协议正常连接。
                         </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">Git 克隆地址</label>
+                            <input type="text" name="gitlabUrl" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="https://gitlab.example.com/group/project.git" required>
+                            <p class="mt-1 text-xs text-[#64748B]">完整克隆地址，与 Jenkins 中配置的一致</p>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3 mt-4">
+                            <div>
+                                <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">用户名</label>
+                                <input type="text" name="username" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" required>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">密码</label>
+                                <input type="password" name="password" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" required>
+                            </div>
+                        </div>
+                        <input type="hidden" name="authType" value="password">
+                    </div>
 
-                        <div class="mb-3">
-                            <label class="form-label">连接方式</label>
-                            <select name="connectMode" class="form-select" id="connectMode">
-                                <option value="clone" selected>克隆模式 (用户名+密码, 适用于 GitLab CE v18.x)</option>
-                                <option value="api">API 模式 (需 Personal Access Token)</option>
-                            </select>
+                    <div id="apiModeFields" style="display:none;">
+                        <div class="px-4 py-3 rounded-lg bg-[#3B82F6]/10 border border-[#3B82F6]/20 text-xs text-[#3B82F6] mb-4">
+                            API 模式需要 Personal Access Token，适用于能够生成 Token 的场景。
                         </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">GitLab 地址</label>
+                            <input type="url" name="gitlabUrl" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="https://gitlab.example.com">
+                            <p class="mt-1 text-xs text-[#64748B]">API 根地址</p>
+                        </div>
+                        <div class="mt-4">
+                            <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">Personal Access Token</label>
+                            <input type="password" name="token" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="GitLab Personal Access Token">
+                            <p class="mt-1 text-xs text-[#64748B]">Settings → Access Tokens → 勾选 read_api</p>
+                        </div>
+                        <input type="hidden" name="authType" value="token">
+                    </div>
 
-                        <div id="cloneModeFields">
-                            <div class="alert alert-warning mb-3">
-                                <strong>推荐</strong>：GitLab CE v18.x 默认禁用密码 API 认证，使用克隆模式可通过 Git 协议正常连接。
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Git 克隆地址</label>
-                                <input type="text" name="gitlabUrl" class="form-control" placeholder="https://gitlab.example.com/group/project.git" required>
-                                <div class="form-text">Git 仓库完整克隆地址，与 Jenkins 中配置的一致</div>
-                            </div>
-                            <div class="row mb-3">
-                                <div class="col-md-6">
-                                    <label class="form-label">用户名</label>
-                                    <input type="text" name="username" class="form-control" required>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="form-label">密码</label>
-                                    <input type="password" name="password" class="form-control" required>
-                                </div>
-                            </div>
-                            <input type="hidden" name="authType" value="password">
-                        </div>
-
-                        <div id="apiModeFields" style="display:none;">
-                            <div class="alert alert-info mb-3">
-                                API 模式需要 Personal Access Token，适用于能够生成 Token 的场景。
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">GitLab 地址</label>
-                                <input type="url" name="gitlabUrl" class="form-control" placeholder="https://gitlab.example.com">
-                                <div class="form-text">GitLab API 根地址</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Personal Access Token</label>
-                                <input type="password" name="token" class="form-control" placeholder="GitLab Personal Access Token">
-                                <div class="form-text">在 GitLab 中生成：Settings → Access Tokens → 勾选 read_api 权限</div>
-                            </div>
-                            <input type="hidden" name="authType" value="token">
-                        </div>
-
-                        <div class="text-center mt-4">
-                            <button type="submit" class="btn btn-primary btn-lg px-5">测试连接并保存</button>
-                        </div>
-                    </form>
+                    <div class="pt-2">
+                        <button type="submit" class="btn-primary w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold border-none cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                            </svg>
+                            测试连接并保存
+                        </button>
+                    </div>
                 </div>
-            </div>
-
-            <div class="text-center mt-3">
-                <p class="text-muted small">配置信息将加密存储，确保数据安全</p>
-            </div>
+            </form>
         </div>
+
+        <p class="text-center text-xs text-[#64748B] mt-4">配置信息将加密存储，确保数据安全</p>
     </div>
 </div>
+
 <script>
     function toggleConnectMode(val) {
         var cloneFields = document.getElementById('cloneModeFields');
@@ -113,9 +118,7 @@
 
     function toggleDisabled(container, disabled) {
         var inputs = container.querySelectorAll('input, select');
-        for (var i = 0; i < inputs.length; i++) {
-            inputs[i].disabled = disabled;
-        }
+        for (var i = 0; i < inputs.length; i++) inputs[i].disabled = disabled;
     }
 
     document.getElementById('connectMode').addEventListener('change', function() {
