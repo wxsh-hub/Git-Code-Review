@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 import cn.hutool.core.util.StrUtil;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -35,8 +36,8 @@ public class DocumentApiController {
     }
 
     @GetMapping("/generate")
-    @Operation(summary = "触发文档生成(GET)", description = "通过GET请求提交文档生成任务，异步执行。必须传入projectCode。")
-    public ResponseEntity<ApiResponse<TaskResponse>> generateGet(
+    @Operation(summary = "触发文档生成", description = "通过GET请求提交文档生成任务。sync=true时同步等待并直接返回文件；sync=false（默认）时异步执行，返回taskId。")
+    public ResponseEntity<?> generateGet(
             @RequestParam String projectCode,
             @RequestParam(required = true) String branch,
             @RequestParam(required = true) String templateName,
@@ -45,7 +46,8 @@ public class DocumentApiController {
             @RequestParam(required = false) String author,
             @RequestParam(required = false) String sinceHash,
             @RequestParam(required = false, defaultValue = "false") boolean incremental,
-            @RequestParam(required = false, defaultValue = "false") boolean useAiClassifier) {
+            @RequestParam(required = false, defaultValue = "false") boolean useAiClassifier,
+            @RequestParam(required = false, defaultValue = "false") boolean sync) {
 
         if (StrUtil.isBlank(projectCode)) {
             return ResponseEntity.badRequest()
@@ -58,13 +60,11 @@ public class DocumentApiController {
                     .body(ApiResponse.error("项目编码不存在: " + projectCode));
         }
 
-        // 处理分支默认值
         String finalBranch = branch;
         if (StrUtil.isBlank(finalBranch) && StrUtil.isNotBlank(project.getDefaultBranch())) {
             finalBranch = project.getDefaultBranch();
         }
 
-        // 处理模板名称默认值
         String finalTemplateName = templateName;
         if (StrUtil.isBlank(finalTemplateName)) {
             if (StrUtil.isNotBlank(project.getTemplateName())) {
@@ -92,8 +92,35 @@ public class DocumentApiController {
 
         String taskId = orchestrator.submitGeneration(docRequest);
 
-        TaskResponse taskResponse = new TaskResponse(taskId, "pending", "5s");
-        return ResponseEntity.ok(ApiResponse.success("文档生成任务已提交", taskResponse));
+        if (!sync) {
+            TaskResponse taskResponse = new TaskResponse(taskId, "pending", "5s");
+            return ResponseEntity.ok(ApiResponse.success("文档生成任务已提交", taskResponse));
+        }
+
+        // sync = true: 轮询等待完成，然后直接返回文件
+        long deadline = System.currentTimeMillis() + 120_000;
+        while (System.currentTimeMillis() < deadline) {
+            GenerationLog logEntry = orchestrator.getTaskLog(taskId);
+            if (logEntry == null) {
+                return ResponseEntity.status(500)
+                        .body(ApiResponse.error("任务提交失败"));
+            }
+            if ("completed".equals(logEntry.getStatus())) {
+                return downloadFileResponse(logEntry);
+            }
+            if ("failed".equals(logEntry.getStatus())) {
+                return ResponseEntity.status(500)
+                        .body(ApiResponse.error("文档生成失败: " + logEntry.getErrorMessage()));
+            }
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        return ResponseEntity.status(408)
+                .body(ApiResponse.error("文档生成超时，请稍后通过 /api/v1/tasks/" + taskId + "/download 获取文件"));
     }
 
     @PostMapping("/generate")
@@ -258,6 +285,10 @@ public class DocumentApiController {
                     .body(ApiResponse.error("任务尚未完成，当前状态: " + logEntry.getStatus()));
         }
 
+        return downloadFileResponse(logEntry);
+    }
+
+    private ResponseEntity<?> downloadFileResponse(GenerationLog logEntry) {
         String outputPath = logEntry.getOutputPath();
         if (StrUtil.isBlank(outputPath)) {
             return ResponseEntity.status(500)
@@ -275,7 +306,6 @@ public class DocumentApiController {
                         .body(ApiResponse.error("输出文件不存在: " + outputPath));
             }
 
-            String extension = filePath.contains(".") ? filePath.substring(filePath.lastIndexOf(".")) : "";
             MediaType mediaType;
             if ("html".equals(logEntry.getFormat())) {
                 mediaType = MediaType.TEXT_HTML;
@@ -283,7 +313,8 @@ public class DocumentApiController {
                 mediaType = MediaType.valueOf("text/markdown");
             }
 
-            InputStreamResource resource = new InputStreamResource(Files.newInputStream(outputFile.toPath()));
+            String extension = filePath.contains(".") ? filePath.substring(filePath.lastIndexOf(".")) : "";
+            InputStreamResource resource = new InputStreamResource(new FileInputStream(outputFile));
 
             return ResponseEntity.ok()
                     .contentType(mediaType)
