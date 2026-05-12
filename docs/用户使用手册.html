@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>devops-ai — 项目发布文档自动生成工具</title>
+<style>
+  /* ── Reset & Base ── */
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    background: #0a0e1a;
+    color: #c8d6e5;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    user-select: none;
+  }
+
+  /* ── Animated Background ── */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background:
+      linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(ellipse at 30% 20%, rgba(0, 100, 255, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 70% 80%, rgba(0, 240, 255, 0.05) 0%, transparent 50%);
+    z-index: 0;
+    pointer-events: none;
+    animation: bgDrift 30s ease-in-out infinite;
+  }
+
+  @keyframes bgDrift {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(-2%, -1%); }
+  }
+
+  /* ── Floating Particles ── */
+  .particles {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .particle {
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    background: rgba(0, 240, 255, 0.4);
+    border-radius: 50%;
+    animation: float linear infinite;
+  }
+  @keyframes float {
+    0% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { transform: translateY(-10vh) rotate(720deg); opacity: 0; }
+  }
+
+  /* ── Slide Container ── */
+  .slides {
+    height: 100vh;
+    width: 100vw;
+    position: relative;
+    z-index: 1;
+  }
+
+  .slide {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 50px 80px;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.5s ease, visibility 0.5s ease;
+    overflow-y: auto;
+  }
+  .slide.active {
+    opacity: 1;
+    visibility: visible;
+    z-index: 10;
+  }
+
+  .slide-inner {
+    max-width: 1100px;
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  /* ── Typography ── */
+  h1 {
+    font-size: 3.6em;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    color: #ffffff;
+    margin-bottom: 0.25em;
+  }
+  h1 .accent {
+    background: linear-gradient(135deg, #00f0ff, #0066ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  h2 {
+    font-size: 2.2em;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: #ffffff;
+    margin-bottom: 0.5em;
+    padding-bottom: 0.25em;
+    border-bottom: 1px solid rgba(0, 240, 255, 0.2);
+    position: relative;
+  }
+  h2::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    width: 60px;
+    height: 2px;
+    background: linear-gradient(90deg, #00f0ff, transparent);
+  }
+  h2 .sub {
+    font-weight: 400;
+    font-size: 0.45em;
+    color: #5a7a9a;
+    margin-left: 12px;
+  }
+  h3 {
+    font-size: 1.15em;
+    font-weight: 600;
+    color: #00f0ff;
+    margin-bottom: 0.5em;
+  }
+  p, li {
+    font-size: 1em;
+    line-height: 1.65;
+    color: #b0c4d8;
+  }
+  p { margin-bottom: 0.8em; }
+
+  ul, ol {
+    margin: 0.5em 0 1em 1.3em;
+  }
+  li {
+    margin-bottom: 0.3em;
+    list-style: none;
+    position: relative;
+    padding-left: 0.4em;
+  }
+  ul li::before {
+    content: '>';
+    position: absolute;
+    left: -1.1em;
+    color: #00f0ff;
+    font-weight: 700;
+  }
+
+  strong {
+    color: #ffffff;
+  }
+  code {
+    font-family: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 0.85em;
+    color: #00f0ff;
+    background: rgba(0, 240, 255, 0.08);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+
+  /* ── Feature Grid ── */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin: 1em 0;
+  }
+  .feature-item {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    padding: 14px 18px;
+    transition: all 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+  .feature-item:hover {
+    background: rgba(0, 240, 255, 0.06);
+    border-color: rgba(0, 240, 255, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 240, 255, 0.08);
+  }
+  .feature-item .label {
+    font-size: 0.7em;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #5a8aaa;
+    margin-bottom: 4px;
+  }
+  .feature-item .value {
+    font-size: 0.95em;
+    color: #c8d6e5;
+  }
+  .feature-grid-2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  /* ── Steps ── */
+  .steps {
+    display: flex;
+    gap: 16px;
+    margin: 1.2em 0;
+    counter-reset: step;
+  }
+  .step-card {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    padding: 20px 18px;
+    counter-increment: step;
+    position: relative;
+    transition: all 0.3s ease;
+  }
+  .step-card:hover {
+    border-color: rgba(0, 240, 255, 0.35);
+    background: rgba(0, 240, 255, 0.05);
+    box-shadow: 0 4px 20px rgba(0, 240, 255, 0.06);
+  }
+  .step-card::before {
+    content: "0" counter(step);
+    position: absolute;
+    top: -8px;
+    right: 12px;
+    font-size: 2.8em;
+    font-weight: 700;
+    color: rgba(0, 240, 255, 0.08);
+    line-height: 1;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .step-card .step-title {
+    font-weight: 600;
+    color: #00f0ff;
+    margin-bottom: 6px;
+    font-size: 0.95em;
+  }
+  .step-card .step-desc {
+    font-size: 0.85em;
+    color: #8aa0b8;
+    line-height: 1.5;
+  }
+
+  /* ── Tags / Badges ── */
+  .badge {
+    display: inline-block;
+    font-size: 0.7em;
+    padding: 3px 12px;
+    border: 1px solid;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-right: 5px;
+    margin-bottom: 5px;
+    border-radius: 2px;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .badge-cyan   { border-color: rgba(0, 240, 255, 0.4); color: #00f0ff; }
+  .badge-blue   { border-color: rgba(0, 102, 255, 0.4); color: #5599ff; }
+  .badge-green  { border-color: rgba(0, 220, 130, 0.4); color: #00dc82; }
+  .badge-purple { border-color: rgba(160, 100, 255, 0.4); color: #a064ff; }
+  .badge-orange  { border-color: rgba(255, 160, 50, 0.4); color: #ffa032; }
+  .badge-red    { border-color: rgba(255, 80, 80, 0.4); color: #ff5050; }
+  .badge-yellow { border-color: rgba(255, 200, 50, 0.4); color: #ffc832; }
+
+  /* ── Image Frame ── */
+  .img-frame {
+    border: 1px solid rgba(0, 240, 255, 0.15);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 6px;
+    margin: 0.8em 0;
+    max-width: 100%;
+    border-radius: 4px;
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+  }
+  .img-frame img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 2px;
+  }
+
+  /* ── Callout ── */
+  .callout {
+    border-left: 3px solid #00f0ff;
+    background: rgba(0, 240, 255, 0.05);
+    padding: 12px 18px;
+    margin: 1em 0;
+    font-size: 0.88em;
+    color: #8ab0d0;
+  }
+  .callout strong { color: #00f0ff; }
+
+  /* ── Footer / Nav ── */
+  .slide-footer {
+    position: absolute;
+    bottom: 18px;
+    left: 60px;
+    right: 60px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.72em;
+    color: rgba(255, 255, 255, 0.2);
+    pointer-events: none;
+    z-index: 20;
+    border-top: 1px solid rgba(0, 240, 255, 0.06);
+    padding-top: 12px;
+  }
+  .slide-footer .page-num {
+    font-weight: 600;
+    color: rgba(0, 240, 255, 0.4);
+    font-family: "JetBrains Mono", monospace;
+  }
+  .slide-footer .controls {
+    pointer-events: auto;
+    display: flex;
+    gap: 8px;
+  }
+  .slide-footer .controls button {
+    background: rgba(0, 240, 255, 0.06);
+    border: 1px solid rgba(0, 240, 255, 0.15);
+    color: rgba(0, 240, 255, 0.5);
+    font-family: inherit;
+    font-size: 0.9em;
+    padding: 4px 12px;
+    cursor: pointer;
+    transition: all 0.3s;
+    border-radius: 2px;
+  }
+  .slide-footer .controls button:hover {
+    background: rgba(0, 240, 255, 0.12);
+    border-color: rgba(0, 240, 255, 0.4);
+    color: #00f0ff;
+  }
+
+  /* ── Title slide ── */
+  .slide-title {
+    text-align: center;
+  }
+  .slide-title .accent-line {
+    width: 60px;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #00f0ff, transparent);
+    margin: 0 auto 20px;
+  }
+  .slide-title .subtitle {
+    font-size: 1em;
+    color: #5a8aaa;
+    margin: 0.6em 0 1.5em;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    font-weight: 300;
+  }
+  .slide-title .version {
+    font-size: 0.8em;
+    color: rgba(255, 255, 255, 0.25);
+    border-top: 1px solid rgba(0, 240, 255, 0.1);
+    padding-top: 1em;
+    margin-top: 1.2em;
+    display: inline-block;
+  }
+  .slide-title h1 {
+    font-size: 4.2em;
+  }
+
+  /* ── Two column ── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+  }
+  .two-col-wide {
+    grid-template-columns: 1.2fr 0.8fr;
+  }
+
+  /* ── Table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+    font-size: 0.82em;
+  }
+  th, td {
+    border: 1px solid rgba(0, 240, 255, 0.1);
+    padding: 7px 12px;
+    text-align: left;
+  }
+  th {
+    background: rgba(0, 240, 255, 0.06);
+    font-weight: 600;
+    color: #00f0ff;
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  td {
+    color: #b0c4d8;
+  }
+
+  /* ── Progress bar ── */
+  .progress-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, #00f0ff, #0066ff);
+    z-index: 100;
+    transition: width 0.4s ease;
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+  }
+
+  /* ── Section Divider ── */
+  .section-divider {
+    text-align: center;
+    padding: 15px 0;
+  }
+  .section-divider .ornament {
+    font-size: 1.2em;
+    color: rgba(0, 240, 255, 0.15);
+    letter-spacing: 1.5em;
+    margin-bottom: 0.3em;
+  }
+
+  /* ── TOC ── */
+  .toc-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .toc-list li {
+    font-size: 1.1em;
+    padding: 8px 0 8px 36px;
+    position: relative;
+    border-bottom: 1px solid rgba(0, 240, 255, 0.06);
+    color: #c8d6e5;
+  }
+  .toc-list li:last-child { border-bottom: none; }
+  .toc-list li .toc-num {
+    position: absolute;
+    left: 0;
+    color: #00f0ff;
+    font-weight: 600;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85em;
+  }
+  .toc-list li .toc-en {
+    display: block;
+    font-size: 0.6em;
+    color: #5a7a9a;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* ── Glow keyframe ── */
+  @keyframes glow {
+    0%, 100% { text-shadow: 0 0 20px rgba(0, 240, 255, 0.3); }
+    50% { text-shadow: 0 0 40px rgba(0, 240, 255, 0.6); }
+  }
+
+  /* ── Corner decorative elements ── */
+  .corner-tl, .corner-tr, .corner-bl, .corner-br {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    pointer-events: none;
+  }
+  .corner-tl { top: 20px; left: 20px; border-top: 2px solid rgba(0, 240, 255, 0.15); border-left: 2px solid rgba(0, 240, 255, 0.15); }
+  .corner-tr { top: 20px; right: 20px; border-top: 2px solid rgba(0, 240, 255, 0.15); border-right: 2px solid rgba(0, 240, 255, 0.15); }
+  .corner-bl { bottom: 60px; left: 20px; border-bottom: 2px solid rgba(0, 240, 255, 0.15); border-left: 2px solid rgba(0, 240, 255, 0.15); }
+  .corner-br { bottom: 60px; right: 20px; border-bottom: 2px solid rgba(0, 240, 255, 0.15); border-right: 2px solid rgba(0, 240, 255, 0.15); }
+
+  /* ── Stats bar ── */
+  .stats-row {
+    display: flex;
+    gap: 20px;
+    margin: 1.2em 0;
+  }
+  .stat-box {
+    flex: 1;
+    text-align: center;
+    padding: 16px 12px;
+    border: 1px solid rgba(0, 240, 255, 0.1);
+    background: rgba(0, 240, 255, 0.03);
+  }
+  .stat-box .stat-num {
+    font-size: 2em;
+    font-weight: 700;
+    color: #00f0ff;
+    font-family: "JetBrains Mono", monospace;
+  }
+  .stat-box .stat-label {
+    font-size: 0.75em;
+    color: #5a8aaa;
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .slide { padding: 30px 24px; }
+    .slide-title h1 { font-size: 2.4em; }
+    h1 { font-size: 2.2em; }
+    h2 { font-size: 1.5em; }
+    .feature-grid { grid-template-columns: 1fr; }
+    .steps { flex-direction: column; }
+    .two-col { grid-template-columns: 1fr; }
+    .stats-row { flex-direction: column; }
+    .slide-footer { left: 24px; right: 24px; flex-direction: column; gap: 6px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="progress-bar" id="progressBar"></div>
+
+<div class="particles" id="particles"></div>
+
+<div class="slides" id="slides">
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 1: TITLE                          -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide active" data-index="0">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner slide-title">
+      <div class="accent-line"></div>
+      <h1>devops-<span class="accent">ai</span></h1>
+      <div class="subtitle">项目发布文档自动生成工具</div>
+      <p style="color:#7a9ab8;max-width:600px;margin:0 auto 1.5em;font-size:1.05em;line-height:1.8;">
+        从 GitLab 提交记录到结构化的发布文档（CHANGELOG / Release Notes），<br>
+        支持 Markdown 和 HTML 两种输出格式，让版本发布告别手写。
+      </p>
+      <div style="margin-top:2em;">
+        <span class="badge badge-cyan">GitLab 集成</span>
+        <span class="badge badge-green">AI 智能分析</span>
+        <span class="badge badge-blue">多模板支持</span>
+        <span class="badge badge-purple">REST API</span>
+        <span class="badge badge-orange">增量生成</span>
+      </div>
+      <div class="version">v1.0.0 &nbsp;·&nbsp; 2026-05-04</div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[01/13]</span>
+      <span style="color:rgba(255,255,255,0.15);">方向键 / 点击按钮切换</span>
+      <span class="controls">
+        <button onclick="nextSlide()">开始探索 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 2: TOC / AGENDA                   -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="1">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>内容概览 <span class="sub">// agenda</span></h2>
+      <div style="margin-top:1.2em;">
+        <ul class="toc-list">
+          <li><span class="toc-num">01</span> 产品概述<span class="toc-en">Product Overview</span></li>
+          <li><span class="toc-num">02</span> 快速开始<span class="toc-en">Quick Start</span></li>
+          <li><span class="toc-num">03</span> 项目配置<span class="toc-en">Project Configuration</span></li>
+          <li><span class="toc-num">04</span> AI 模型配置<span class="toc-en">AI Model Configuration</span></li>
+          <li><span class="toc-num">05</span> 文档生成<span class="toc-en">Document Generation</span></li>
+          <li><span class="toc-num">06</span> 模板管理<span class="toc-en">Template Management</span></li>
+          <li><span class="toc-num">07</span> 生成历史<span class="toc-en">Generation History</span></li>
+          <li><span class="toc-num">08</span> 第三方对接 API<span class="toc-en">Third-party Integration</span></li>
+        </ul>
+      </div>
+      <div class="callout" style="margin-top:1.2em;">
+        面向研发团队和 DevOps 工程师 · 5 分钟完成首次文档生成 · 开箱即用
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[02/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 3: PRODUCT OVERVIEW               -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="2">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>产品概述 <span class="sub">// overview</span></h2>
+      <p style="margin-bottom:1em;font-size:1.05em;">
+        devops-ai 是一款<strong>通用的项目发布文档自动生成工具</strong>。
+        它从 GitLab 仓库获取提交记录（Commits），利用 AI 对提交进行智能分类整理，
+        一键生成结构化的发布文档，支持 Markdown 和 HTML 两种输出格式。
+      </p>
+
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-num">12</div>
+          <div class="stat-label">提交分类</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num">3</div>
+          <div class="stat-label">内置模板</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num">3</div>
+          <div class="stat-label">LLM 供应商</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-num">2</div>
+          <div class="stat-label">输出格式</div>
+        </div>
+      </div>
+
+      <div class="feature-grid">
+        <div class="feature-item"><div class="label">GitLab 集成</div><div class="value">API 和 Git 克隆双模式连接 GitLab 仓库</div></div>
+        <div class="feature-item"><div class="label">AI 智能分析</div><div class="value">接入 DeepSeek / OpenAI / Anthropic 进行智能分类</div></div>
+        <div class="feature-item"><div class="label">多模板支持</div><div class="value">标准、简洁、详细三种内置模板 + 自定义模板</div></div>
+        <div class="feature-item"><div class="label">增量生成</div><div class="value">仅处理上次生成后的新提交，避免重复</div></div>
+        <div class="feature-item"><div class="label">多种输出</div><div class="value">支持 Markdown 和 HTML 两种格式输出</div></div>
+        <div class="feature-item"><div class="label">REST API</div><div class="value">完整的 HTTP API 供 CI/CD 及第三方系统对接</div></div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[03/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 4: QUICK START                    -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="3">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>快速开始 <span class="sub">// quick start</span></h2>
+      <p style="margin-bottom:0.5em;">四个步骤即可完成首次文档生成：</p>
+
+      <div class="steps">
+        <div class="step-card">
+          <div class="step-title">启动系统</div>
+          <div class="step-desc">运行 <code>start.bat</code> 或 <code>./start.sh</code>，访问 <strong>http://localhost:8070</strong></div>
+        </div>
+        <div class="step-card">
+          <div class="step-title">配置项目</div>
+          <div class="step-desc">添加 GitLab 仓库配置，选择项目和分支，测试连接</div>
+        </div>
+        <div class="step-card">
+          <div class="step-title">配置 AI (可选)</div>
+          <div class="step-desc">填写 LLM API 密钥（DeepSeek / OpenAI / Anthropic）</div>
+        </div>
+        <div class="step-card">
+          <div class="step-title">生成文档</div>
+          <div class="step-desc">选择项目和参数，点击「开始生成」，在历史页面查看</div>
+        </div>
+      </div>
+
+      <div style="margin-top:1.2em;background:rgba(0,0,0,0.2);border:1px solid rgba(0,240,255,0.08);padding:14px 18px;">
+        <div style="font-size:0.78em;color:#5a8aaa;font-family:'JetBrains Mono',monospace;margin-bottom:6px;"># 启动命令</div>
+        <div style="font-size:0.85em;font-family:'JetBrains Mono',monospace;color:#b0c4d8;line-height:1.8;">
+          <span style="color:#5a7a9a;"># Windows</span>
+          start.bat                    <span style="color:#5a7a9a;"># 前台运行</span>
+          start.bat --daemon           <span style="color:#5a7a9a;"># 后台运行</span>
+          <span style="color:#5a7a9a;"># Linux / Mac</span>
+          ./start.sh start             <span style="color:#5a7a9a;"># 后台启动</span>
+          ./start.sh stop              <span style="color:#5a7a9a;"># 停止服务</span>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[04/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 5: PROJECT CONFIG                 -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="4">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>项目配置 <span class="sub">// project configuration</span></h2>
+      <p style="margin-bottom:0.3em;"><strong>路径：</strong>侧边栏 → 项目配置 | <code>/config/project</code></p>
+
+      <div class="two-col" style="margin-top:0.8em;">
+        <div>
+          <h3>新增项目字段</h3>
+          <table>
+            <tr><th>字段</th><th>说明</th></tr>
+            <tr><td>项目名称</td><td>自定义显示名称</td></tr>
+            <tr><td>项目编码</td><td>自动生成，API 调用标识</td></tr>
+            <tr><td>GitLab 地址</td><td>API / 克隆模式</td></tr>
+            <tr><td>认证方式</td><td>Token 或 用户名+密码</td></tr>
+            <tr><td>默认分支</td><td>选择目标分支</td></tr>
+            <tr><td>文档模板</td><td>选择默认模板</td></tr>
+          </table>
+          <div class="callout" style="margin-top:0.5em;">
+            克隆模式推荐：适用于 GitLab CE v18.x，使用 Git 协议克隆仓库
+          </div>
+        </div>
+        <div>
+          <h3>界面截图</h3>
+          <div class="img-frame">
+            <img src="项目配置.png" alt="项目配置页面" loading="lazy">
+          </div>
+          <p style="font-size:0.75em;color:#5a7a9a;text-align:center;">项目配置页面 — 添加和管理 GitLab 仓库</p>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[05/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 6: AI MODEL CONFIG                -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="5">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>AI 模型配置 <span class="sub">// ai model configuration</span></h2>
+      <p style="margin-bottom:0.3em;"><strong>路径：</strong>侧边栏 → AI 模型配置 | <code>/config/ai</code></p>
+
+      <div class="two-col two-col-wide" style="margin-top:0.8em;">
+        <div>
+          <h3>参数说明</h3>
+          <table>
+            <tr><th>参数</th><th>默认值</th></tr>
+            <tr><td>模型供应商</td><td>DeepSeek / OpenAI / Anthropic</td></tr>
+            <tr><td>模型 ID</td><td>deepseek-chat / gpt-4o-mini / claude-3-haiku</td></tr>
+            <tr><td>自定义请求地址</td><td>可选，兼容 OpenAI API 格式</td></tr>
+            <tr><td>API 密钥</td><td>加密存储</td></tr>
+            <tr><td>温度参数</td><td>0.1–2.0（推荐 0.3）</td></tr>
+          </table>
+          <div style="margin-top:0.8em;">
+            <span class="badge badge-cyan">DeepSeek</span>
+            <span class="badge badge-blue">OpenAI</span>
+            <span class="badge badge-green">Anthropic</span>
+            <span class="badge badge-purple">兼容接口</span>
+          </div>
+          <div class="callout" style="margin-top:0.5em;">
+            未配置 AI 时自动降级为规则分类，不影响文档正常生成
+          </div>
+        </div>
+        <div>
+          <h3>界面截图</h3>
+          <div class="img-frame">
+            <img src="AI模型配置.png" alt="AI模型配置页面" loading="lazy">
+          </div>
+          <p style="font-size:0.75em;color:#5a7a9a;text-align:center;">AI 模型配置 — 对接 LLM 服务</p>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[06/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 7: DOCUMENT GENERATION (1/2)      -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="6">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>文档生成 <span class="sub">// document generation</span></h2>
+      <p style="margin-bottom:0.3em;"><strong>路径：</strong>侧边栏 → 文档生成 | <code>/generate</code></p>
+
+      <div class="two-col" style="margin-top:0.5em;">
+        <div>
+          <h3>核心参数</h3>
+          <ul>
+            <li>项目配置 — 选择已配置的 GitLab 项目</li>
+            <li>分支 & 版本号 — 选择目标分支和版本</li>
+            <li>筛选方式 — 时间范围 或 Hash 范围</li>
+            <li>作者筛选 — 指定作者（可选）</li>
+            <li>输出格式 — Markdown 或 HTML</li>
+            <li>文档模板 — standard / compact / detailed</li>
+            <li>增量生成 — 只处理新增提交</li>
+            <li>AI 智能分析 — 启用 LLM 分类和分析报告</li>
+          </ul>
+        </div>
+        <div>
+          <h3>提交分类体系（12 类）</h3>
+          <div style="margin-bottom:0.8em;">
+            <span class="badge badge-cyan">新功能</span>
+            <span class="badge badge-blue">功能更新</span>
+            <span class="badge badge-red">Bug 修复</span>
+            <span class="badge badge-purple">代码重构</span>
+            <span class="badge badge-orange">性能优化</span>
+            <span class="badge badge-green">样式调整</span>
+            <span class="badge badge-yellow">文档更新</span>
+            <span class="badge badge-blue">测试相关</span>
+            <span class="badge badge-cyan">构建相关</span>
+            <span class="badge badge-red">CI 配置</span>
+            <span class="badge badge-green">依赖更新</span>
+            <span class="badge badge-purple">其他变更</span>
+          </div>
+          <h3>分类模式</h3>
+          <ul>
+            <li><strong>规则分类（默认）</strong>— 前缀关键字匹配</li>
+            <li><strong>AI 分类</strong>— LLM 语义理解，准确度更高</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[07/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 8: DOCUMENT GENERATION (2/2)      -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="7">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>文档生成 · 界面预览 <span class="sub">// generate preview</span></h2>
+      <div class="img-frame" style="max-width:90%;margin:0.5em auto;">
+        <img src="文档生成.png" alt="文档生成页面" loading="lazy">
+      </div>
+      <p style="font-size:0.8em;color:#5a7a9a;text-align:center;">
+        文档生成页面 — 配置参数，一键生成发布文档
+      </p>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[08/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 9: AI ANALYSIS REPORT             -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="8">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>AI 分析报告 <span class="sub">// ai analysis report</span></h2>
+      <p style="margin-bottom:0.8em;">
+        启用「AI 智能分析」并选择「详细」模板时，系统自动生成版本分析报告：
+      </p>
+
+      <div class="feature-grid feature-grid-2">
+        <div class="feature-item">
+          <div class="label">开发者贡献分布</div>
+          <div class="value">按提交次数排序的开发者贡献量统计</div>
+        </div>
+        <div class="feature-item">
+          <div class="label">提交类型统计</div>
+          <div class="value">各类别提交的数量和占比分析</div>
+        </div>
+        <div class="feature-item">
+          <div class="label">版本核心价值</div>
+          <div class="value">本次迭代的核心目标与业务价值概述</div>
+        </div>
+        <div class="feature-item">
+          <div class="label">开发成果总结</div>
+          <div class="value">重要功能、技术优化和关键突破</div>
+        </div>
+      </div>
+
+      <div class="callout">
+        AI 报告助力团队回顾，让每次发版都有据可查、有迹可循
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[09/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 10: TEMPLATE MANAGEMENT           -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="9">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>模板管理 <span class="sub">// template management</span></h2>
+      <p><strong>路径：</strong>侧边栏 → 模板管理 | <code>/config/template</code></p>
+
+      <div class="two-col" style="margin-top:0.8em;">
+        <div>
+          <h3>内置模板</h3>
+          <table>
+            <tr><th>名称</th><th>说明</th></tr>
+            <tr><td><code>standard</code> 标准模板</td><td>项目名称、版本、构建信息、变更分类</td></tr>
+            <tr><td><code>compact</code> 简洁模板</td><td>仅含项目名称和变更内容，快速预览</td></tr>
+            <tr><td><code>detailed</code> 详细模板</td><td>构建信息 + 统计数据 + AI 分析报告</td></tr>
+          </table>
+
+          <h3 style="margin-top:0.8em;">模板变量</h3>
+          <p style="font-size:0.82em;color:#8aa0b8;">
+            使用 <code>${variableName}</code> 语法替换：
+            <code>projectName</code>、<code>projectVersion</code>、<code>branch</code>、
+            <code>buildTime</code>、<code>dateRange</code>、<code>categories</code>、
+            <code>totalCommits</code>、<code>totalAuthors</code>、<code>analysisReport</code>
+          </p>
+        </div>
+        <div>
+          <h3>界面截图</h3>
+          <div class="img-frame">
+            <img src="模版管理.png" alt="模板管理页面" loading="lazy">
+          </div>
+          <p style="font-size:0.75em;color:#5a7a9a;text-align:center;">模板管理 — 内置模板与自定义模板</p>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[10/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 11: GENERATION HISTORY            -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="10">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>生成历史 <span class="sub">// generation history</span></h2>
+      <p><strong>路径：</strong>侧边栏 → 生成历史 | <code>/history</code></p>
+
+      <div class="two-col" style="margin-top:0.5em;">
+        <div>
+          <h3>任务列表</h3>
+          <table>
+            <tr><th>字段</th><th>说明</th></tr>
+            <tr><td>任务 ID</td><td><code>项目编码_日期-时间</code></td></tr>
+            <tr><td>项目</td><td>关联的项目名称</td></tr>
+            <tr><td>状态</td>
+                <td>
+                  <span class="badge badge-yellow">pending</span>
+                  <span class="badge badge-cyan">running</span>
+                  <span class="badge badge-green">completed</span>
+                  <span class="badge badge-red">failed</span>
+                </td></tr>
+            <tr><td>格式</td><td>Markdown / HTML</td></tr>
+            <tr><td>创建/完成时间</td><td>任务时间线</td></tr>
+          </table>
+
+          <h3 style="margin-top:0.8em;">已完成操作</h3>
+          <ul>
+            <li><strong>查看文档</strong>— 浏览器直接预览</li>
+            <li><strong>下载文档</strong>— 保存到本地</li>
+            <li><strong>删除</strong>— 清除历史及输出文件</li>
+          </ul>
+        </div>
+        <div>
+          <h3>界面截图</h3>
+          <div class="img-frame">
+            <img src="生成历史.png" alt="生成历史页面" loading="lazy">
+          </div>
+          <p style="font-size:0.75em;color:#5a7a9a;text-align:center;">生成历史 — 任务状态追踪与文档管理</p>
+        </div>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[11/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 12: API INTEGRATION               -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="11">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner">
+      <h2>第三方对接 API <span class="sub">// rest api</span></h2>
+      <p><strong>基础地址：</strong><code>https://&lt;your-host&gt;/api/v1</code></p>
+
+      <div class="two-col" style="margin-top:0.8em;">
+        <div>
+          <h3>异步模式（推荐）</h3>
+          <div style="background:rgba(0,0,0,0.2);border:1px solid rgba(0,240,255,0.08);padding:12px 16px;font-size:0.78em;font-family:'JetBrains Mono',monospace;line-height:2;color:#b0c4d8;">
+            <span style="color:#5a7a9a;">① 提交任务</span>
+            GET /api/v1/generate?projectCode=xxx
+            <span style="color:#5a7a9a;">② 轮询状态（每 2-3s）</span>
+            GET /api/v1/tasks/{taskId}
+            <span style="color:#5a7a9a;">③ 下载结果</span>
+            GET /api/v1/tasks/{taskId}/download
+          </div>
+        </div>
+        <div>
+          <h3>同步模式（CI/CD）</h3>
+          <div style="background:rgba(0,0,0,0.2);border:1px solid rgba(0,240,255,0.08);padding:12px 16px;font-size:0.78em;font-family:'JetBrains Mono',monospace;line-height:2;color:#b0c4d8;">
+            <span style="color:#5a7a9a;">等待最多 120 秒直接返回文件</span>
+            GET /api/v1/generate?projectCode=xxx&sync=true
+          </div>
+          <h3 style="margin-top:0.8em;">错误码</h3>
+          <div style="font-size:0.78em;color:#8aa0b8;">
+            200 成功 · 400 参数错误 · 404 不存在 · 408 超时 · 409 未完成 · 500 错误
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:0.8em;border-top:1px solid rgba(0,240,255,0.08);padding-top:0.8em;">
+        <span class="badge badge-orange">Jenkins</span>
+        <span class="badge badge-cyan">GitLab CI</span>
+        <span class="badge badge-blue">GitHub Actions</span>
+        <span style="font-size:0.78em;color:#5a7a9a;margin-left:6px;">— CI/CD 流水线原生支持</span>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[12/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="nextSlide()">下一步 →</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════ -->
+  <!-- SLIDE 13: END / THANK YOU               -->
+  <!-- ════════════════════════════════════════ -->
+  <div class="slide" data-index="12">
+    <div class="corner-tl"></div><div class="corner-tr"></div>
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="slide-inner slide-title">
+      <div class="accent-line"></div>
+      <h1>感谢 <span class="accent">体验</span></h1>
+      <div class="subtitle" style="margin-bottom:0.5em;">devops-ai · 让发布文档不再手写</div>
+
+      <p style="color:#7a9ab8;max-width:500px;margin:0 auto;font-size:1.05em;">
+        项目发布文档自动生成 &nbsp;·&nbsp; GitLab + AI + 多模板 + REST API
+      </p>
+
+      <div style="margin:1.8em 0;">
+        <p style="font-size:0.85em;">立即访问 <code>http://localhost:8070</code> 开始使用</p>
+      </div>
+
+      <div style="font-size:0.75em;color:#5a7a9a;border-top:1px solid rgba(0,240,255,0.1);padding-top:1em;display:inline-block;">
+        API 文档：<code>http://localhost:8070/swagger-ui.html</code>
+      </div>
+
+      <div style="margin-top:1.5em;">
+        <span class="badge badge-cyan">v1.0.0</span>
+        <span class="badge badge-blue">2026-05-04</span>
+      </div>
+    </div>
+    <div class="slide-footer">
+      <span class="page-num">[13/13]</span>
+      <span class="controls">
+        <button onclick="prevSlide()">← 返回</button>
+        <button onclick="showSlide(0)">重新开始 ↺</button>
+      </span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ── Generate Particles ──
+  (function() {
+    const container = document.getElementById('particles');
+    for (let i = 0; i < 30; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      p.style.left = Math.random() * 100 + '%';
+      p.style.width = p.style.height = (1 + Math.random() * 2) + 'px';
+      p.style.animationDuration = (15 + Math.random() * 25) + 's';
+      p.style.animationDelay = (Math.random() * 20) + 's';
+      p.style.opacity = 0.2 + Math.random() * 0.5;
+      container.appendChild(p);
+    }
+  })();
+
+  // ── Slide Logic ──
+  const slides = document.querySelectorAll('.slide');
+  let current = 0;
+  const total = slides.length;
+
+  window.showSlide = function(index) {
+    slides.forEach(s => s.classList.remove('active'));
+    slides[index].classList.add('active');
+    document.getElementById('progressBar').style.width = ((index + 1) / total * 100) + '%';
+    current = index;
+  };
+
+  window.nextSlide = function() {
+    if (current < total - 1) showSlide(current + 1);
+  };
+  window.prevSlide = function() {
+    if (current > 0) showSlide(current - 1);
+  };
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') {
+      e.preventDefault(); nextSlide();
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault(); prevSlide();
+    }
+    if (e.key === 'Home') { e.preventDefault(); showSlide(0); }
+    if (e.key === 'End') { e.preventDefault(); showSlide(total - 1); }
+  });
+
+  // ── Touch Support ──
+  let touchStartX = 0, touchEndX = 0;
+  document.addEventListener('touchstart', e => { touchStartX = e.changedTouches[0].screenX; });
+  document.addEventListener('touchend', e => {
+    touchEndX = e.changedTouches[0].screenX;
+    const diff = touchStartX - touchEndX;
+    if (Math.abs(diff) > 50) {
+      if (diff > 0) nextSlide();
+      else prevSlide();
+    }
+  });
+
+  // ── Init ──
+  showSlide(0);
+</script>
+
+</body>
+</html>

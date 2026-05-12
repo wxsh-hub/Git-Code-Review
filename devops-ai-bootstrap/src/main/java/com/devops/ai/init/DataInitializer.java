@@ -77,8 +77,8 @@ public class DataInitializer implements CommandLineRunner {
     private void checkConfigStatus() {
         List<ProjectConfig> activeConfigs = projectConfigRepository.findByActiveTrue();
         if (activeConfigs.isEmpty()) {
-            log.info("No active project configuration found. Please visit /setup to configure.");
-            log.info("Application started successfully in setup mode.");
+            log.info("No active project configuration found. Please visit /config/project to configure.");
+            log.info("Application started successfully. Waiting for project configuration.");
         } else {
             log.info("Found {} active project configuration(s).", activeConfigs.size());
         }

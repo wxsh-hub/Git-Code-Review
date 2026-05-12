@@ -9,13 +9,24 @@ import com.devops.ai.core.incremental.IncrementalManager;
 import com.devops.ai.core.model.Category;
 import com.devops.ai.core.model.Commit;
 import com.devops.ai.core.model.GitLabCommitQuery;
+import com.devops.ai.core.review.ai.CodeReviewAiService;
+import com.devops.ai.core.review.collector.CodeReviewDataCollector;
+import com.devops.ai.core.review.engine.CodeReviewGraphEngine;
+import com.devops.ai.core.review.model.CodeReviewContext;
+import com.devops.ai.core.review.model.CodeReviewGraph;
+import com.devops.ai.core.review.model.CodeReviewResult;
+import com.devops.ai.core.review.model.FileDiff;
+import com.devops.ai.core.review.report.ReviewReportGenerator;
 import com.devops.ai.infrastructure.entity.GenerationLog;
+import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.repository.GenerationLogRepository;
+import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import cn.hutool.core.util.StrUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -33,6 +44,11 @@ public class GenerationOrchestrator {
     private final IncrementalManager incrementalManager;
     private final GenerationLogRepository generationLogRepository;
     private final AiClassifier aiClassifier;
+    private final ProjectConfigRepository projectConfigRepository;
+    private final CodeReviewDataCollector codeReviewDataCollector;
+    private final CodeReviewGraphEngine codeReviewGraphEngine;
+    private final CodeReviewAiService codeReviewAiService;
+    private final ReviewReportGenerator reviewReportGenerator;
 
     private static final String[] CATEGORY_ORDER = {
             "新功能", "功能更新", "Bug修复", "代码重构",
@@ -48,7 +64,12 @@ public class GenerationOrchestrator {
                                   DocumentGenerator documentGenerator,
                                   IncrementalManager incrementalManager,
                                   GenerationLogRepository generationLogRepository,
-                                  AiClassifier aiClassifier) {
+                                  AiClassifier aiClassifier,
+                                  ProjectConfigRepository projectConfigRepository,
+                                  CodeReviewDataCollector codeReviewDataCollector,
+                                  CodeReviewGraphEngine codeReviewGraphEngine,
+                                  CodeReviewAiService codeReviewAiService,
+                                  ReviewReportGenerator reviewReportGenerator) {
         this.gitLabService = gitLabService;
         this.commitProcessor = commitProcessor;
         this.classifierService = classifierService;
@@ -56,6 +77,11 @@ public class GenerationOrchestrator {
         this.incrementalManager = incrementalManager;
         this.generationLogRepository = generationLogRepository;
         this.aiClassifier = aiClassifier;
+        this.projectConfigRepository = projectConfigRepository;
+        this.codeReviewDataCollector = codeReviewDataCollector;
+        this.codeReviewGraphEngine = codeReviewGraphEngine;
+        this.codeReviewAiService = codeReviewAiService;
+        this.reviewReportGenerator = reviewReportGenerator;
     }
 
     public String submitGeneration(DocumentRequest request) {
@@ -69,6 +95,7 @@ public class GenerationOrchestrator {
         logEntry.setStatus("pending");
         logEntry.setFormat(request.getFormat() != null ? request.getFormat() : "markdown");
         logEntry.setIncremental(request.isIncremental());
+        logEntry.setHasReview(request.isUseCodeReview());
         logEntry.setDimension(request.getDimensions() != null ? String.join(",", request.getDimensions()) : "all");
         generationLogRepository.save(logEntry);
 
@@ -92,6 +119,15 @@ public class GenerationOrchestrator {
                     String outputUrl = "/output/" + taskId + "." + extension;
                     logEntry.setOutputPath(outputUrl);
                     log.info("Document saved to: {} (URL: {})", outputFile.getAbsolutePath(), outputUrl);
+
+                    if (request.isUseCodeReview() && result.getReviewContent() != null) {
+                        String reviewExtension = "html".equals(request.getReviewFormat()) ? "html" : "md";
+                        java.io.File reviewFile = new java.io.File(outputDir, taskId + "_review." + reviewExtension);
+                        java.nio.file.Files.write(reviewFile.toPath(), result.getReviewContent().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        String reviewUrl = "/output/" + taskId + "_review." + reviewExtension;
+                        logEntry.setReviewOutputPath(reviewUrl);
+                        log.info("Review document saved to: {} (URL: {})", reviewFile.getAbsolutePath(), reviewUrl);
+                    }
                 }
                 if (!result.isSuccess()) {
                     logEntry.setErrorMessage(result.getErrorMessage());
@@ -242,6 +278,70 @@ public class GenerationOrchestrator {
         }
 
         DocumentResult result = documentGenerator.generate(request);
+
+        if (result.isSuccess() && request.isUseCodeReview()) {
+            try {
+                ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
+                if (projectConfig != null) {
+                    String reviewSinceHash = request.getSinceHash();
+                    String reviewUntilHash = request.getUntilHash();
+
+                    // If no hash range provided, scan the entire project from root commit
+                    if (reviewSinceHash == null && reviewUntilHash == null) {
+                        File cloneDir = codeReviewDataCollector.resolveCloneDir(projectConfig);
+                        // Ensure clone exists by running collectDiffs first
+                        if (commits != null && !commits.isEmpty()) {
+                            String firstHash = commits.get(0).getId();
+                            codeReviewDataCollector.collectDiffs(projectConfig, firstHash, firstHash);
+                        }
+                        String rootHash = codeReviewDataCollector.getRootCommitHash(cloneDir);
+                        if (rootHash != null) {
+                            reviewSinceHash = rootHash;
+                            reviewUntilHash = "HEAD";
+                            log.info("Full project scan: diff from root commit {} to HEAD", rootHash);
+                        }
+                    } else if (reviewSinceHash == null || reviewUntilHash == null) {
+                        // One of the hashes is missing — derive from commits
+                        if (commits != null && !commits.isEmpty()) {
+                            if (reviewUntilHash == null) reviewUntilHash = commits.get(0).getId();
+                            if (reviewSinceHash == null) reviewSinceHash = commits.get(commits.size() - 1).getId();
+                        }
+                    }
+
+                    if (reviewSinceHash != null && reviewUntilHash != null) {
+                        List<FileDiff> diffs = codeReviewDataCollector.collectDiffs(projectConfig, reviewSinceHash, reviewUntilHash);
+                        File cloneDir = codeReviewDataCollector.resolveCloneDir(projectConfig);
+                        String repoPath = cloneDir.getAbsolutePath();
+
+                        // Run code-review-graph static analysis
+                        String graphJson = codeReviewGraphEngine.analyze(repoPath, reviewSinceHash);
+                        if (graphJson == null) {
+                            log.warn("code-review-graph returned no output, skipping graph analysis");
+                        }
+
+                        CodeReviewContext reviewContext = new CodeReviewContext();
+                        reviewContext.setProjectName(request.getProjectName());
+                        reviewContext.setProjectVersion(request.getProjectVersion());
+                        reviewContext.setBranch(request.getBranch());
+                        reviewContext.setCommits(commits);
+                        reviewContext.setFileDiffs(diffs);
+                        reviewContext.setGraphAnalysisJson(graphJson);
+
+                        CodeReviewResult reviewResult = codeReviewAiService.review(reviewContext);
+
+                        String reviewFormat = request.getReviewFormat() != null ? request.getReviewFormat() : "markdown";
+                        String reviewContent = reviewReportGenerator.generate(reviewResult, reviewContext, reviewFormat);
+                        result.setReviewContent(reviewContent);
+                    } else {
+                        log.warn("Code review skipped: cannot determine commit hash range");
+                    }
+                } else {
+                    log.warn("Code review skipped: project config not found for {}", request.getProjectName());
+                }
+            } catch (Exception e) {
+                log.error("Code review failed: {}", e.getMessage(), e);
+            }
+        }
 
         if (result.isSuccess() && request.isIncremental() && !commits.isEmpty()) {
             String latestHash = commits.get(0).getId();

@@ -33,6 +33,7 @@ public class SecurityConfig {
         @Override
         protected void configure(HttpSecurity http) throws Exception {
             http
+                    .antMatcher("/api/**")
                     .authorizeRequests()
                     .antMatchers("/api-docs/**","/api/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                     .anyRequest().authenticated()

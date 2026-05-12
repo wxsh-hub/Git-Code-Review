@@ -17,6 +17,7 @@ target
 
 #maven ignore
 target/
+data/
 
 #eclipse ignore
 .settings/
@@ -37,6 +38,6 @@ output/
 
 .mcp.json
 .claude/
-docs/
 /release-doc-generator
 .git-clones
+.gitnexus

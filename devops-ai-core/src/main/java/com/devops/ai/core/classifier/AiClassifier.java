@@ -1,15 +1,13 @@
 package com.devops.ai.core.classifier;
 
+import com.devops.ai.core.llm.LlmClient;
 import com.devops.ai.infrastructure.entity.AiConfig;
 import com.devops.ai.infrastructure.exception.AiServiceException;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
@@ -20,6 +18,8 @@ public class AiClassifier implements ClassifierStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(AiClassifier.class);
 
+    private final RestTemplate restTemplate = new RestTemplate();
+
     private static final Map<String, String> DEFAULT_API_URLS = new LinkedHashMap<>();
 
     static {
@@ -28,12 +28,12 @@ public class AiClassifier implements ClassifierStrategy {
         DEFAULT_API_URLS.put("anthropic", "https://api.anthropic.com");
     }
 
-    private final RestTemplate restTemplate;
+    private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
     private final ConfigEncryptor configEncryptor;
 
-    public AiClassifier(AiConfigRepository aiConfigRepository, ConfigEncryptor configEncryptor) {
-        this.restTemplate = new RestTemplate();
+    public AiClassifier(LlmClient llmClient, AiConfigRepository aiConfigRepository, ConfigEncryptor configEncryptor) {
+        this.llmClient = llmClient;
         this.aiConfigRepository = aiConfigRepository;
         this.configEncryptor = configEncryptor;
     }

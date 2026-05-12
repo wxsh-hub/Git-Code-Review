@@ -39,15 +39,17 @@ public class DocumentApiController {
     @Operation(summary = "触发文档生成", description = "通过GET请求提交文档生成任务。sync=true时同步等待并直接返回文件；sync=false（默认）时异步执行，返回taskId。")
     public ResponseEntity<?> generateGet(
             @RequestParam String projectCode,
-            @RequestParam(required = true) String branch,
-            @RequestParam(required = true) String templateName,
-            @RequestParam(required = true) String format,
-            @RequestParam(required = true) String projectVersion,
+            @RequestParam(required = false) String branch,
+            @RequestParam(required = false, defaultValue = "markdown") String format,
+            @RequestParam(required = false) String projectVersion,
             @RequestParam(required = false) String author,
             @RequestParam(required = false) String sinceHash,
+            @RequestParam(required = false) String templateName,
             @RequestParam(required = false, defaultValue = "false") boolean incremental,
             @RequestParam(required = false, defaultValue = "false") boolean useAiClassifier,
-            @RequestParam(required = false, defaultValue = "false") boolean sync) {
+            @RequestParam(required = false, defaultValue = "false") boolean sync,
+            @RequestParam(required = false, defaultValue = "false") boolean useCodeReview,
+            @RequestParam(required = false, defaultValue = "markdown") String reviewFormat) {
 
         if (StrUtil.isBlank(projectCode)) {
             return ResponseEntity.badRequest()
@@ -59,6 +61,8 @@ public class DocumentApiController {
             return ResponseEntity.badRequest()
                     .body(ApiResponse.error("项目编码不存在: " + projectCode));
         }
+
+        branch = normalizeBranch(branch);
 
         String finalBranch = branch;
         if (StrUtil.isBlank(finalBranch) && StrUtil.isNotBlank(project.getDefaultBranch())) {
@@ -85,6 +89,8 @@ public class DocumentApiController {
         docRequest.setAuthor(author);
         docRequest.setIncremental(incremental);
         docRequest.setUseAiClassifier(useAiClassifier);
+        docRequest.setUseCodeReview(useCodeReview);
+        docRequest.setReviewFormat(reviewFormat);
 
         if (StrUtil.isBlank(docRequest.getUntil())) {
             docRequest.setUntil(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
@@ -97,8 +103,8 @@ public class DocumentApiController {
             return ResponseEntity.ok(ApiResponse.success("文档生成任务已提交", taskResponse));
         }
 
-        // sync = true: 轮询等待完成，然后直接返回文件
-        long deadline = System.currentTimeMillis() + 120_000;
+        // sync = true: 轮询等待完成，然后直接返回文件（最长等待1小时）
+        long deadline = System.currentTimeMillis() + 3_600_000;
         while (System.currentTimeMillis() < deadline) {
             GenerationLog logEntry = orchestrator.getTaskLog(taskId);
             if (logEntry == null) {
@@ -139,6 +145,10 @@ public class DocumentApiController {
                     .body(ApiResponse.error("项目编码不存在: " + request.getProjectCode()));
         }
 
+        String requestBranch = request.getBranch();
+        if (StrUtil.isNotBlank(requestBranch)) {
+            request.setBranch(normalizeBranch(requestBranch));
+        }
         if (StrUtil.isBlank(request.getBranch()) && StrUtil.isNotBlank(project.getDefaultBranch())) {
             request.setBranch(project.getDefaultBranch());
         }
@@ -172,6 +182,8 @@ public class DocumentApiController {
         docRequest.setDimensions(request.getDimensions());
         docRequest.setIncremental(request.isIncremental());
         docRequest.setUseAiClassifier(request.isUseAiClassifier());
+        docRequest.setUseCodeReview(request.isUseCodeReview());
+        docRequest.setReviewFormat(request.getReviewFormat());
 
         if (StrUtil.isBlank(docRequest.getUntil())) {
             docRequest.setUntil(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
@@ -286,6 +298,23 @@ public class DocumentApiController {
         }
 
         return downloadFileResponse(logEntry);
+    }
+
+    private static String normalizeBranch(String branch) {
+        if (StrUtil.isBlank(branch)) {
+            return null;
+        }
+        String result = branch.trim();
+        // 先移除首尾斜杠
+        result = StrUtil.removePrefix(result, "/");
+        result = StrUtil.removeSuffix(result, "/");
+        // 再移除常见的远程前缀
+        if (result.startsWith("remotes/origin/")) {
+            result = result.substring("remotes/origin/".length());
+        } else if (result.startsWith("origin/")) {
+            result = result.substring("origin/".length());
+        }
+        return StrUtil.isBlank(result) ? null : result;
     }
 
     private ResponseEntity<?> downloadFileResponse(GenerationLog logEntry) {

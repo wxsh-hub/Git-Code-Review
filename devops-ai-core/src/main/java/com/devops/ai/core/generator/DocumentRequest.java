@@ -18,6 +18,8 @@ public class DocumentRequest {
     private List<String> dimensions;
     private boolean incremental;
     private boolean useAiClassifier;
+    private boolean useCodeReview;
+    private String reviewFormat;
     private List<com.devops.ai.core.model.Category> categories;
     private int totalCommits;
     private int totalAuthors;
@@ -133,6 +135,22 @@ public class DocumentRequest {
 
     public void setUseAiClassifier(boolean useAiClassifier) {
         this.useAiClassifier = useAiClassifier;
+    }
+
+    public boolean isUseCodeReview() {
+        return useCodeReview;
+    }
+
+    public void setUseCodeReview(boolean useCodeReview) {
+        this.useCodeReview = useCodeReview;
+    }
+
+    public String getReviewFormat() {
+        return reviewFormat;
+    }
+
+    public void setReviewFormat(String reviewFormat) {
+        this.reviewFormat = reviewFormat;
     }
 
     public List<com.devops.ai.core.model.Category> getCategories() {

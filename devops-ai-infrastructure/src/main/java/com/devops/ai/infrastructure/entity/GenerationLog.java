@@ -43,6 +43,12 @@ public class GenerationLog {
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
+    @Column(name = "has_review")
+    private Boolean hasReview;
+
+    @Column(name = "review_output_path", length = 500)
+    private String reviewOutputPath;
+
     @PrePersist
     protected void onCreate() {
         createdAt = new Date();
@@ -134,5 +140,21 @@ public class GenerationLog {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public Boolean getHasReview() {
+        return hasReview;
+    }
+
+    public void setHasReview(Boolean hasReview) {
+        this.hasReview = hasReview;
+    }
+
+    public String getReviewOutputPath() {
+        return reviewOutputPath;
+    }
+
+    public void setReviewOutputPath(String reviewOutputPath) {
+        this.reviewOutputPath = reviewOutputPath;
     }
 }

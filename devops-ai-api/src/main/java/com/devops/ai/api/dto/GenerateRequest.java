@@ -44,6 +44,12 @@ public class GenerateRequest {
     @Schema(description = "是否使用AI智能分类", example = "true", defaultValue = "false")
     private boolean useAiClassifier;
 
+    @Schema(description = "是否生成代码审查文档", example = "false", defaultValue = "false")
+    private boolean useCodeReview;
+
+    @Schema(description = "审查文档输出格式: markdown / html", example = "markdown", defaultValue = "markdown")
+    private String reviewFormat = "markdown";
+
     public String getProjectCode() {
         return projectCode;
     }
@@ -146,5 +152,21 @@ public class GenerateRequest {
 
     public void setUseAiClassifier(boolean useAiClassifier) {
         this.useAiClassifier = useAiClassifier;
+    }
+
+    public boolean isUseCodeReview() {
+        return useCodeReview;
+    }
+
+    public void setUseCodeReview(boolean useCodeReview) {
+        this.useCodeReview = useCodeReview;
+    }
+
+    public String getReviewFormat() {
+        return reviewFormat;
+    }
+
+    public void setReviewFormat(String reviewFormat) {
+        this.reviewFormat = reviewFormat;
     }
 }

@@ -12,8 +12,17 @@ import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.storage.file.FileBasedConfig;
+import org.eclipse.jgit.api.TransportConfigCallback;
+import org.eclipse.jgit.transport.TransportHttp;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import org.eclipse.jgit.transport.http.HttpConnection;
+import org.eclipse.jgit.transport.http.HttpConnectionFactory;
+import org.eclipse.jgit.transport.http.JDKHttpConnectionFactory;
 import org.eclipse.jgit.util.FS;
+
+import javax.net.ssl.*;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -31,6 +40,42 @@ public class GitCloneService {
     private static final String CLONE_DIR = System.getProperty("user.dir") + "/.git-clones";
 
     private final ConfigEncryptor configEncryptor;
+
+    private static final TrustManager[] TRUST_ALL = new TrustManager[]{
+            new X509TrustManager() {
+                public X509Certificate[] getAcceptedIssuers() { return null; }
+                public void checkClientTrusted(X509Certificate[] certs, String authType) { }
+                public void checkServerTrusted(X509Certificate[] certs, String authType) { }
+            }
+    };
+
+    private static final TransportConfigCallback INSECURE_SSL_CALLBACK = transport -> {
+        if (transport instanceof TransportHttp) {
+            HttpConnectionFactory delegate = new JDKHttpConnectionFactory();
+            ((TransportHttp) transport).setHttpConnectionFactory(new HttpConnectionFactory() {
+                @Override
+                public HttpConnection create(java.net.URL url) throws java.io.IOException {
+                    HttpConnection conn = delegate.create(url);
+                    configureInsecure(conn);
+                    return conn;
+                }
+                @Override
+                public HttpConnection create(java.net.URL url, java.net.Proxy proxy) throws java.io.IOException {
+                    HttpConnection conn = delegate.create(url, proxy);
+                    configureInsecure(conn);
+                    return conn;
+                }
+                private void configureInsecure(HttpConnection conn) {
+                    try {
+                        conn.configure(null, TRUST_ALL, new SecureRandom());
+                        conn.setHostnameVerifier((hostname, session) -> true);
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to configure insecure SSL", e);
+                    }
+                }
+            });
+        }
+    };
 
     public GitCloneService(ConfigEncryptor configEncryptor) {
         this.configEncryptor = configEncryptor;
@@ -80,13 +125,14 @@ public class GitCloneService {
         try {
             if (cloneDir.exists()) {
                 git = Git.open(cloneDir);
-                git.fetch().setCredentialsProvider(createCredentials(config)).call();
+                git.fetch().setCredentialsProvider(createCredentials(config)).setTransportConfigCallback(INSECURE_SSL_CALLBACK).call();
             } else {
                 cloneDir.getParentFile().mkdirs();
                 git = Git.cloneRepository()
                         .setURI(config.getGitlabUrl())
                         .setDirectory(cloneDir)
                         .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
                         .setCloneAllBranches(true)
                         .call();
             }
@@ -185,6 +231,7 @@ public class GitCloneService {
                     .setURI(config.getGitlabUrl())
                     .setDirectory(cloneDir)
                     .setCredentialsProvider(createCredentials(config))
+                    .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
                     .setCloneAllBranches(true)
                     .call();
             return true;
@@ -227,11 +274,12 @@ public class GitCloneService {
                         .setURI(config.getGitlabUrl())
                         .setDirectory(cloneDir)
                         .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
                         .setCloneAllBranches(true)
                         .call();
             } else {
                 git = Git.open(cloneDir);
-                git.fetch().setCredentialsProvider(createCredentials(config)).call();
+                git.fetch().setCredentialsProvider(createCredentials(config)).setTransportConfigCallback(INSECURE_SSL_CALLBACK).call();
             }
 
             List<Branch> result = new ArrayList<>();
@@ -267,11 +315,12 @@ public class GitCloneService {
                         .setURI(config.getGitlabUrl())
                         .setDirectory(cloneDir)
                         .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
                         .setCloneAllBranches(true)
                         .call();
             } else {
                 git = Git.open(cloneDir);
-                git.fetch().setCredentialsProvider(createCredentials(config)).call();
+                git.fetch().setCredentialsProvider(createCredentials(config)).setTransportConfigCallback(INSECURE_SSL_CALLBACK).call();
             }
 
             Set<String> seen = new HashSet<>();
@@ -314,12 +363,7 @@ public class GitCloneService {
     }
 
     private UsernamePasswordCredentialsProvider createCredentials(ProjectConfig config) {
-        String decryptedCredentials = config.getCredentials();
-        try {
-            decryptedCredentials = configEncryptor.decrypt(decryptedCredentials);
-        } catch (Exception e) {
-            log.warn("Failed to decrypt credentials: {}", e.getMessage());
-        }
+        String decryptedCredentials = configEncryptor.decrypt(config.getCredentials());
 
         if (decryptedCredentials != null && decryptedCredentials.contains(":")) {
             String[] parts = decryptedCredentials.split(":", 2);

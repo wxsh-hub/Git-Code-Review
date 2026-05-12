@@ -1,0 +1,44 @@
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.1.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.1.0 http://maven.apache.org/xsd/assembly-2.1.0.xsd">
+
+    <id>bin</id>
+    <formats>
+        <format>zip</format>
+    </formats>
+
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>devops-ai-v1.0.0</baseDirectory>
+
+    <files>
+        <file>
+            <source>${project.build.directory}/${project.build.finalName}.jar</source>
+            <outputDirectory>/</outputDirectory>
+            <destName>devops-ai-bootstrap-1.0.0.jar</destName>
+        </file>
+        <file>
+            <source>${project.basedir}/src/main/resources/application.yml</source>
+            <outputDirectory>/config</outputDirectory>
+        </file>
+        <file>
+            <source>${project.basedir}/../start.bat</source>
+            <outputDirectory>/</outputDirectory>
+        </file>
+        <file>
+            <source>${project.basedir}/../start.sh</source>
+            <outputDirectory>/</outputDirectory>
+            <fileMode>755</fileMode>
+        </file>
+    </files>
+
+    <fileSets>
+        <fileSet>
+            <directory>${project.basedir}/../docs</directory>
+            <outputDirectory>/</outputDirectory>
+            <includes>
+                <include>用户使用手册.md</include>
+                <include>用户使用手册.html</include>
+            </includes>
+        </fileSet>
+    </fileSets>
+</assembly>

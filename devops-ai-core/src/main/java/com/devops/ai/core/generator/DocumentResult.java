@@ -10,6 +10,9 @@ public class DocumentResult {
     private boolean success;
     private String errorMessage;
 
+    private String reviewContent;
+    private String reviewOutputPath;
+
     public DocumentResult() {
     }
 
@@ -73,5 +76,21 @@ public class DocumentResult {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public String getReviewContent() {
+        return reviewContent;
+    }
+
+    public void setReviewContent(String reviewContent) {
+        this.reviewContent = reviewContent;
+    }
+
+    public String getReviewOutputPath() {
+        return reviewOutputPath;
+    }
+
+    public void setReviewOutputPath(String reviewOutputPath) {
+        this.reviewOutputPath = reviewOutputPath;
     }
 }
