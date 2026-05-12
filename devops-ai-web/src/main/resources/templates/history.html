@@ -46,6 +46,8 @@
                 <div th:if="${currentTask.status == 'completed'}" class="flex gap-2">
                     <a class="btn-primary inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold no-underline" target="_blank" th:href="@{/history/view/{id}(id=${currentTask.taskId})}">查看文档</a>
                     <a class="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-[#1E293B] text-sm text-[#94A3B8] no-underline hover:text-[#F8FAFC]" th:href="@{/history/download/{id}(id=${currentTask.taskId})}">下载文档</a>
+                    <a th:if="${currentTask.hasReview}" class="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-blue-500/30 text-sm text-blue-400 no-underline hover:text-blue-300" target="_blank" th:href="@{/history/review/view/{id}(id=${currentTask.taskId})}">查看审查文档</a>
+                    <a th:if="${currentTask.hasReview}" class="btn-ghost inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-blue-500/30 text-sm text-blue-400 no-underline hover:text-blue-300" th:href="@{/history/review/download/{id}(id=${currentTask.taskId})}">下载审查文档</a>
                     <a class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-red-500/20 text-sm text-red-400 no-underline hover:bg-red-500/10" href="#" onclick="if(confirm('确认删除此历史记录？')){document.getElementById('deleteForm-${currentTask.taskId}').submit();}">删除</a>
                     <form id="deleteForm-${currentTask.taskId}" action="/history/delete/${currentTask.taskId}" method="post" style="display:none;"></form>
                 </div>
@@ -66,6 +68,7 @@
                             <th class="pb-3 pr-4 text-[#64748B]">状态</th>
                             <th class="pb-3 pr-4 text-[#64748B]">格式</th>
                             <th class="pb-3 pr-4 text-[#64748B]">增量</th>
+                            <th class="pb-3 pr-4 text-[#64748B]">审查</th>
                             <th class="pb-3 pr-4 text-[#64748B]">创建时间</th>
                             <th class="pb-3 pr-4 text-[#64748B]">完成时间</th>
                             <th class="pb-3 text-[#64748B]">操作</th>
@@ -86,12 +89,17 @@
                                 <span th:if="${log.incremental}" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-[#22C55E]/10 text-[#22C55E]">是</span>
                                 <span th:unless="${log.incremental}" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-[#64748B]/10 text-[#64748B]">否</span>
                             </td>
+                            <td class="py-3 pr-4">
+                                <span th:if="${log.hasReview}" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-400">有</span>
+                                <span th:unless="${log.hasReview}" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-[#64748B]/10 text-[#64748B]">-</span>
+                            </td>
                             <td class="py-3 pr-4 text-sm text-[#64748B]" th:text="${log.createdAt}">-</td>
                             <td class="py-3 pr-4 text-sm text-[#64748B]" th:text="${log.completedAt}">-</td>
                             <td class="py-3">
                                 <div class="flex gap-2" th:if="${log.status == 'completed'}">
                                     <a class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#1E293B] text-xs text-[#94A3B8] no-underline hover:text-[#F8FAFC]" target="_blank" th:href="@{/history/view/{id}(id=${log.taskId})}">查看</a>
                                     <a class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#1E293B] text-xs text-[#94A3B8] no-underline hover:text-[#F8FAFC]" th:href="@{/history/download/{id}(id=${log.taskId})}">下载</a>
+                                    <a th:if="${log.hasReview}" class="btn-ghost inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-blue-500/30 text-xs text-blue-400 no-underline hover:text-blue-300" target="_blank" th:href="@{/history/review/view/{id}(id=${log.taskId})}">审查</a>
                                 </div>
                                 <span th:unless="${log.status == 'completed'}" class="text-xs text-[#64748B]">-</span>
                                 <a class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-red-500/20 text-xs text-red-400 no-underline hover:bg-red-500/10 ml-1" href="#" onclick="if(confirm('确认删除此记录？')){document.getElementById('del-${log.taskId}').submit();}">删除</a>

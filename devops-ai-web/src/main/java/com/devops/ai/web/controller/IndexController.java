@@ -33,7 +33,7 @@ public class IndexController {
         try {
             long configCount = projectConfigRepository.count();
             if (configCount == 0) {
-                return "redirect:/setup";
+                return "redirect:/config/project";
             }
 
             Sort sort = Sort.by(Sort.Direction.DESC, "createdAt");

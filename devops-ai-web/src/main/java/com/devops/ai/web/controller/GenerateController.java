@@ -160,7 +160,7 @@ public class GenerateController {
 
             request.setProjectId(project.getProjectId());
             if (request.getProjectName() == null || request.getProjectName().isEmpty()) {
-                request.setProjectName(project.getName());
+                request.setProjectName(project.getProjectCode());
             }
             if (StrUtil.isBlank(request.getBranch())) {
                 request.setBranch(project.getDefaultBranch());

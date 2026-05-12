@@ -112,6 +112,18 @@
                             <input type="checkbox" name="useAiClassifier" class="w-4 h-4 rounded accent-[#22C55E]" value="true">
                             AI 智能分析
                         </label>
+<!--                        <label class="flex items-center gap-2 text-sm text-[#94A3B8] cursor-pointer">-->
+<!--                            <input type="checkbox" name="useCodeReview" id="useCodeReview" class="w-4 h-4 rounded accent-[#22C55E]" value="true">-->
+<!--                            生成代码审查文档-->
+<!--                        </label>-->
+                    </div>
+
+                    <div id="reviewFormatGroup" style="display: none;" class="mt-4 p-4 bg-[#0A0E14] rounded-lg border border-[#1E293B]">
+                        <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">审查文档格式</label>
+                        <select name="reviewFormat" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
+                            <option value="markdown" class="bg-[#0F172A]">Markdown</option>
+                            <option value="html" class="bg-[#0F172A]">HTML</option>
+                        </select>
                     </div>
 
                     <div class="mt-6">
@@ -246,6 +258,10 @@
             document.getElementById('timeRangeGroup').style.display = this.value === 'time' ? '' : 'none';
             document.getElementById('hashRangeGroup').style.display = this.value === 'hash' ? '' : 'none';
         });
+    });
+
+    document.getElementById('useCodeReview').addEventListener('change', function() {
+        document.getElementById('reviewFormatGroup').style.display = this.checked ? '' : 'none';
     });
 </script>
 </body>

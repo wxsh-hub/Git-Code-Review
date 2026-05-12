@@ -47,13 +47,13 @@
                         <div>
                             <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">认证方式</label>
                             <select name="authType" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" id="authType" onchange="toggleAuthType()">
+                                <option value="password" class="bg-[#0F172A]" selected>用户名+密码</option>
                                 <option value="token" class="bg-[#0F172A]">Token 认证</option>
-                                <option value="password" class="bg-[#0F172A]">用户名+密码</option>
                             </select>
                         </div>
                     </div>
 
-                    <div id="tokenField">
+                    <div id="tokenField" style="display:none;">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
                             <div>
                                 <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">Personal Access Token</label>
@@ -63,7 +63,7 @@
                         <input type="hidden" name="connectMode" value="api">
                     </div>
 
-                    <div id="passwordField" style="display:none;">
+                    <div id="passwordField">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
                             <div>
                                 <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">用户名</label>
@@ -358,6 +358,9 @@
         connectionTested = false;
         resetProjectSettings();
     });
+
+    // 页面加载后初始化认证方式显示状态
+    toggleAuthType();
 </script>
 </body>
 </html>

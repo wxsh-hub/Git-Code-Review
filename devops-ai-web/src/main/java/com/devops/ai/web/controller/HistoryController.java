@@ -51,6 +51,14 @@ public class HistoryController {
                 if (file.exists() && file.delete()) {
                     log.info("Deleted output file: {}", file.getAbsolutePath());
                 }
+                if (Boolean.TRUE.equals(logEntry.getHasReview()) && logEntry.getReviewOutputPath() != null) {
+                    String reviewPath = logEntry.getReviewOutputPath();
+                    String reviewFilePath = reviewPath.startsWith("/output/") ? reviewPath.substring(8) : reviewPath;
+                    java.io.File reviewFile = new java.io.File("output", reviewFilePath);
+                    if (reviewFile.exists() && reviewFile.delete()) {
+                        log.info("Deleted review file: {}", reviewFile.getAbsolutePath());
+                    }
+                }
                 generationLogRepository.delete(logEntry);
                 log.info("Deleted history record: {}", taskId);
                 redirectAttributes.addFlashAttribute("message", "历史记录已删除");
@@ -71,6 +79,44 @@ public class HistoryController {
             return "redirect:/history?taskId=" + taskId;
         }
         return "redirect:" + logEntry.getOutputPath();
+    }
+
+    @GetMapping("/review/view/{taskId}")
+    public String viewReview(@PathVariable String taskId) {
+        GenerationLog logEntry = generationLogRepository.findByTaskId(taskId);
+        if (logEntry == null || !Boolean.TRUE.equals(logEntry.getHasReview()) || logEntry.getReviewOutputPath() == null) {
+            return "redirect:/history?taskId=" + taskId;
+        }
+        return "redirect:" + logEntry.getReviewOutputPath();
+    }
+
+    @GetMapping("/review/download/{taskId}")
+    public ResponseEntity<byte[]> downloadReview(@PathVariable String taskId) {
+        GenerationLog logEntry = generationLogRepository.findByTaskId(taskId);
+        if (logEntry == null || !Boolean.TRUE.equals(logEntry.getHasReview()) || logEntry.getReviewOutputPath() == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String outputPath = logEntry.getReviewOutputPath();
+        String filePath = outputPath.startsWith("/output/") ? outputPath.substring(8) : outputPath;
+        java.io.File file = new java.io.File("output", filePath);
+        if (!file.exists()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            byte[] content = java.nio.file.Files.readAllBytes(file.toPath());
+            String extension = filePath.endsWith(".html") ? "html" : "md";
+            MediaType mediaType = "html".equals(extension)
+                    ? MediaType.TEXT_HTML : MediaType.valueOf("text/markdown");
+            return ResponseEntity.ok()
+                    .contentType(mediaType)
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"REVIEW_" + taskId + "." + extension + "\"")
+                    .body(content);
+        } catch (Exception e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     @GetMapping("/download/{taskId}")
