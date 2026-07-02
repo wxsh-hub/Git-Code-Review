@@ -17,6 +17,7 @@ import com.devops.ai.core.review.model.CodeReviewGraph;
 import com.devops.ai.core.review.model.CodeReviewResult;
 import com.devops.ai.core.review.model.FileDiff;
 import com.devops.ai.core.review.report.ReviewReportGenerator;
+import com.devops.ai.core.efficiency.DeveloperEfficiencyService;
 import com.devops.ai.infrastructure.entity.GenerationLog;
 import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.repository.GenerationLogRepository;
@@ -49,6 +50,7 @@ public class GenerationOrchestrator {
     private final CodeReviewGraphEngine codeReviewGraphEngine;
     private final CodeReviewAiService codeReviewAiService;
     private final ReviewReportGenerator reviewReportGenerator;
+    private final DeveloperEfficiencyService developerEfficiencyService;
 
     private static final String[] CATEGORY_ORDER = {
             "新功能", "功能更新", "Bug修复", "代码重构",
@@ -69,7 +71,8 @@ public class GenerationOrchestrator {
                                   CodeReviewDataCollector codeReviewDataCollector,
                                   CodeReviewGraphEngine codeReviewGraphEngine,
                                   CodeReviewAiService codeReviewAiService,
-                                  ReviewReportGenerator reviewReportGenerator) {
+                                  ReviewReportGenerator reviewReportGenerator,
+                                  DeveloperEfficiencyService developerEfficiencyService) {
         this.gitLabService = gitLabService;
         this.commitProcessor = commitProcessor;
         this.classifierService = classifierService;
@@ -82,6 +85,7 @@ public class GenerationOrchestrator {
         this.codeReviewGraphEngine = codeReviewGraphEngine;
         this.codeReviewAiService = codeReviewAiService;
         this.reviewReportGenerator = reviewReportGenerator;
+        this.developerEfficiencyService = developerEfficiencyService;
     }
 
     public String submitGeneration(DocumentRequest request) {
@@ -120,7 +124,7 @@ public class GenerationOrchestrator {
                     logEntry.setOutputPath(outputUrl);
                     log.info("Document saved to: {} (URL: {})", outputFile.getAbsolutePath(), outputUrl);
 
-                    if (request.isUseCodeReview() && result.getReviewContent() != null) {
+                    if ((request.isUseCodeReview() || request.isUseEfficiencyAnalysis()) && result.getReviewContent() != null) {
                         String reviewExtension = "html".equals(request.getReviewFormat()) ? "html" : "md";
                         java.io.File reviewFile = new java.io.File(outputDir, taskId + "_review." + reviewExtension);
                         java.nio.file.Files.write(reviewFile.toPath(), result.getReviewContent().getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -340,6 +344,45 @@ public class GenerationOrchestrator {
                 }
             } catch (Exception e) {
                 log.error("Code review failed: {}", e.getMessage(), e);
+            }
+        }
+
+        // Developer efficiency analysis (after code review, merges into review content)
+        if (result.isSuccess() && request.isUseEfficiencyAnalysis()) {
+            try {
+                ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
+                if (projectConfig != null) {
+                    String reviewSinceHash = request.getSinceHash();
+                    String reviewUntilHash = request.getUntilHash();
+                    // Derive hash range if not specified
+                    if (reviewSinceHash == null || reviewUntilHash == null) {
+                        if (commits != null && !commits.isEmpty()) {
+                            if (reviewUntilHash == null) reviewUntilHash = commits.get(0).getId();
+                            if (reviewSinceHash == null) reviewSinceHash = commits.get(commits.size() - 1).getId();
+                        }
+                    }
+                    if (reviewSinceHash != null && reviewUntilHash != null) {
+                        log.info("Starting developer efficiency analysis...");
+                        String efficiencySection = developerEfficiencyService.analyzeAndGenerateReport(
+                                commits, projectConfig, reviewSinceHash, reviewUntilHash);
+                        if (efficiencySection != null && !efficiencySection.isEmpty()) {
+                            String reviewContent = result.getReviewContent();
+                            if (reviewContent != null && !reviewContent.isEmpty()) {
+                                result.setReviewContent(reviewContent + "\n\n---\n\n" + efficiencySection);
+                            } else {
+                                result.setReviewContent("# 开发者效率分析报告\n\n" + efficiencySection);
+                            }
+                            log.info("Efficiency analysis appended to review report");
+                        }
+                    } else {
+                        log.warn("Efficiency analysis skipped: cannot determine commit hash range");
+                    }
+                } else {
+                    log.warn("Efficiency analysis skipped: project config not found");
+                }
+            } catch (Exception e) {
+                log.error("Efficiency analysis failed: {}", e.getMessage(), e);
+                // Don't fail the whole generation — just log the error
             }
         }
 

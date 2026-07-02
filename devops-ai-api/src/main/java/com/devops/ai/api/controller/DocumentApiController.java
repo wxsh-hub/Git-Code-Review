@@ -49,6 +49,7 @@ public class DocumentApiController {
             @RequestParam(required = false, defaultValue = "false") boolean useAiClassifier,
             @RequestParam(required = false, defaultValue = "false") boolean sync,
             @RequestParam(required = false, defaultValue = "false") boolean useCodeReview,
+            @RequestParam(required = false, defaultValue = "false") boolean useEfficiencyAnalysis,
             @RequestParam(required = false, defaultValue = "markdown") String reviewFormat) {
 
         if (StrUtil.isBlank(projectCode)) {
@@ -90,6 +91,7 @@ public class DocumentApiController {
         docRequest.setIncremental(incremental);
         docRequest.setUseAiClassifier(useAiClassifier);
         docRequest.setUseCodeReview(useCodeReview);
+        docRequest.setUseEfficiencyAnalysis(useEfficiencyAnalysis);
         docRequest.setReviewFormat(reviewFormat);
 
         if (StrUtil.isBlank(docRequest.getUntil())) {

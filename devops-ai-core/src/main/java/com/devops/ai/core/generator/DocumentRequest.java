@@ -19,6 +19,7 @@ public class DocumentRequest {
     private boolean incremental;
     private boolean useAiClassifier;
     private boolean useCodeReview;
+    private boolean useEfficiencyAnalysis;
     private String reviewFormat;
     private List<com.devops.ai.core.model.Category> categories;
     private int totalCommits;
@@ -143,6 +144,14 @@ public class DocumentRequest {
 
     public void setUseCodeReview(boolean useCodeReview) {
         this.useCodeReview = useCodeReview;
+    }
+
+    public boolean isUseEfficiencyAnalysis() {
+        return useEfficiencyAnalysis;
+    }
+
+    public void setUseEfficiencyAnalysis(boolean useEfficiencyAnalysis) {
+        this.useEfficiencyAnalysis = useEfficiencyAnalysis;
     }
 
     public String getReviewFormat() {

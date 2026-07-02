@@ -47,6 +47,9 @@ public class GenerateRequest {
     @Schema(description = "是否生成代码审查文档", example = "false", defaultValue = "false")
     private boolean useCodeReview;
 
+    @Schema(description = "是否启用开发者效率分析（分析重复修改、fix vs enhance 分类）", example = "false", defaultValue = "false")
+    private boolean useEfficiencyAnalysis;
+
     @Schema(description = "审查文档输出格式: markdown / html", example = "markdown", defaultValue = "markdown")
     private String reviewFormat = "markdown";
 
@@ -160,6 +163,14 @@ public class GenerateRequest {
 
     public void setUseCodeReview(boolean useCodeReview) {
         this.useCodeReview = useCodeReview;
+    }
+
+    public boolean isUseEfficiencyAnalysis() {
+        return useEfficiencyAnalysis;
+    }
+
+    public void setUseEfficiencyAnalysis(boolean useEfficiencyAnalysis) {
+        this.useEfficiencyAnalysis = useEfficiencyAnalysis;
     }
 
     public String getReviewFormat() {
