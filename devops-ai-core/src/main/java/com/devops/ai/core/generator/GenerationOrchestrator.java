@@ -212,7 +212,9 @@ public class GenerationOrchestrator {
 
         commits = commitProcessor.deduplicate(commits);
 
-        if (request.isUseAiClassifier() && aiClassifier.isAvailable()) {
+        // Run AI classifier if requested, or if efficiency analysis needs the categories
+        boolean needAiClassify = request.isUseAiClassifier() || request.isUseEfficiencyAnalysis();
+        if (needAiClassify && aiClassifier.isAvailable()) {
             List<String> messages = commits.stream()
                     .map(Commit::getMessage)
                     .collect(Collectors.toList());
@@ -234,7 +236,7 @@ public class GenerationOrchestrator {
             return documentGenerator.generate(request);
         }
 
-        List<ClassificationResult> classificationResults = classifyCommits(commits, request.isUseAiClassifier());
+        List<ClassificationResult> classificationResults = classifyCommits(commits, needAiClassify);
 
         Map<String, List<Commit>> categorizedCommits = new LinkedHashMap<>();
         for (String catName : CATEGORY_ORDER) {
@@ -389,11 +391,11 @@ public class GenerationOrchestrator {
                         }
                     }
                     if (reviewSinceHash != null && reviewUntilHash != null) {
-                        log.info("Starting developer efficiency analysis: sinceHash={}, untilHash={}",
+                        log.info("Starting developer efficiency analysis (v2 blame): sinceHash={}, untilHash={}",
                                 reviewSinceHash.substring(0, Math.min(8, reviewSinceHash.length())),
                                 reviewUntilHash.substring(0, Math.min(8, reviewUntilHash.length())));
                         String efficiencySection = developerEfficiencyService.analyzeAndGenerateReport(
-                                commits, projectConfig, reviewSinceHash, reviewUntilHash);
+                                commits, request.getCategories(), projectConfig, reviewSinceHash, reviewUntilHash);
                         if (efficiencySection != null && !efficiencySection.isEmpty()) {
                             String reviewContent = result.getReviewContent();
                             if (reviewContent != null && !reviewContent.isEmpty()) {

@@ -1,8 +1,14 @@
 package com.devops.ai.core.efficiency.model;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 单个开发者的效率画像：
- * 提交了多少代码，引入了多少需要别人修复的问题，帮别人修复了多少问题。
+ * 引入的 bug 数（含份额）、修复的 bug 数、bug 率。
+ *
+ * <p>v2: 改为基于 AI 提交分类 + git blame 反向溯源，
+ * 替代 v1 的全量 churn 检测 + LLM FIX/ENHANCE 分类。</p>
  */
 public class DeveloperEfficiency {
 
@@ -10,19 +16,108 @@ public class DeveloperEfficiency {
     private String authorEmail;
 
     private int totalCommits;
-    private int totalLinesChanged;
 
-    /** 自己引入的、被别人修复的问题数 */
-    private int fixesIntroduced;
-    /** 自己修复别人的问题数 */
-    private int fixesMadeForOthers;
-    /** 自己做的功能增强数 */
-    private int enhancementsMade;
-    /** 参与重复修改的总次数 */
-    private int repeatedChangeCount;
+    /** 引入的 bug 数（含分数份额，多个引入者时均摊） */
+    private double bugsIntroduced;
+    /** 修复别人的 bug 数 */
+    private int fixesMade;
+    /** bug 率 = bugsIntroduced / totalCommits（可能 > 1.0） */
+    private double bugRate;
 
-    /** 效率评分：越高越好。公式见 DeveloperEfficiencyService */
-    private double efficiencyScore;
+    /** 引入的每个 bug 的详情 */
+    private List<BugDetail> bugDetails = new ArrayList<>();
+    /** 修复的每个 bug 的详情 */
+    private List<FixDetail> fixDetails = new ArrayList<>();
+
+    // ===== 内部类 =====
+
+    /**
+     * 开发者引入的一个 bug 详情。
+     */
+    public static class BugDetail {
+        /** 引入 bug 的 commit id */
+        private String commitId;
+        /** 引入 bug 的 commit message */
+        private String commitMessage;
+        /** 引入时间 */
+        private String createdAt;
+        /** 引入者姓名（bug 本来是谁写的） */
+        private String introducedBy;
+        /** 涉及的文件 */
+        private String filePath;
+        /** 涉及的行数 */
+        private int lineCount;
+        /** 该开发者的责任份额（1/N，N = 该行其他引入者人数） */
+        private double share;
+        /** 修复者姓名 */
+        private String fixedBy;
+        /** 修复 commit id */
+        private String fixedCommitId;
+        /** 修复 commit message */
+        private String fixedMessage;
+        /** 修复时间 */
+        private String fixedAt;
+
+        public String getCommitId() { return commitId; }
+        public void setCommitId(String commitId) { this.commitId = commitId; }
+        public String getCommitMessage() { return commitMessage; }
+        public void setCommitMessage(String commitMessage) { this.commitMessage = commitMessage; }
+        public String getCreatedAt() { return createdAt; }
+        public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+        public String getIntroducedBy() { return introducedBy; }
+        public void setIntroducedBy(String introducedBy) { this.introducedBy = introducedBy; }
+        public String getFilePath() { return filePath; }
+        public void setFilePath(String filePath) { this.filePath = filePath; }
+        public int getLineCount() { return lineCount; }
+        public void setLineCount(int lineCount) { this.lineCount = lineCount; }
+        public double getShare() { return share; }
+        public void setShare(double share) { this.share = share; }
+        public String getFixedBy() { return fixedBy; }
+        public void setFixedBy(String fixedBy) { this.fixedBy = fixedBy; }
+        public String getFixedCommitId() { return fixedCommitId; }
+        public void setFixedCommitId(String fixedCommitId) { this.fixedCommitId = fixedCommitId; }
+        public String getFixedMessage() { return fixedMessage; }
+        public void setFixedMessage(String fixedMessage) { this.fixedMessage = fixedMessage; }
+        public String getFixedAt() { return fixedAt; }
+        public void setFixedAt(String fixedAt) { this.fixedAt = fixedAt; }
+    }
+
+    /**
+     * 开发者修复的一个 bug 详情。
+     */
+    public static class FixDetail {
+        /** fix commit id */
+        private String commitId;
+        /** fix commit message */
+        private String commitMessage;
+        /** 修复时间 */
+        private String createdAt;
+        /** 被修的人（bug 引入者） */
+        private String introducedBy;
+        /** bug 引入的 commit id */
+        private String introducedByCommitId;
+        /** bug 引入的 commit message */
+        private String introducedByMessage;
+        /** 涉及的文件 */
+        private String filePath;
+
+        public String getCommitId() { return commitId; }
+        public void setCommitId(String commitId) { this.commitId = commitId; }
+        public String getCommitMessage() { return commitMessage; }
+        public void setCommitMessage(String commitMessage) { this.commitMessage = commitMessage; }
+        public String getCreatedAt() { return createdAt; }
+        public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+        public String getIntroducedBy() { return introducedBy; }
+        public void setIntroducedBy(String introducedBy) { this.introducedBy = introducedBy; }
+        public String getIntroducedByCommitId() { return introducedByCommitId; }
+        public void setIntroducedByCommitId(String introducedByCommitId) { this.introducedByCommitId = introducedByCommitId; }
+        public String getIntroducedByMessage() { return introducedByMessage; }
+        public void setIntroducedByMessage(String introducedByMessage) { this.introducedByMessage = introducedByMessage; }
+        public String getFilePath() { return filePath; }
+        public void setFilePath(String filePath) { this.filePath = filePath; }
+    }
+
+    // ===== getters / setters =====
 
     public String getAuthorName() { return authorName; }
     public void setAuthorName(String authorName) { this.authorName = authorName; }
@@ -33,21 +128,18 @@ public class DeveloperEfficiency {
     public int getTotalCommits() { return totalCommits; }
     public void setTotalCommits(int totalCommits) { this.totalCommits = totalCommits; }
 
-    public int getTotalLinesChanged() { return totalLinesChanged; }
-    public void setTotalLinesChanged(int totalLinesChanged) { this.totalLinesChanged = totalLinesChanged; }
+    public double getBugsIntroduced() { return bugsIntroduced; }
+    public void setBugsIntroduced(double bugsIntroduced) { this.bugsIntroduced = bugsIntroduced; }
 
-    public int getFixesIntroduced() { return fixesIntroduced; }
-    public void setFixesIntroduced(int fixesIntroduced) { this.fixesIntroduced = fixesIntroduced; }
+    public int getFixesMade() { return fixesMade; }
+    public void setFixesMade(int fixesMade) { this.fixesMade = fixesMade; }
 
-    public int getFixesMadeForOthers() { return fixesMadeForOthers; }
-    public void setFixesMadeForOthers(int fixesMadeForOthers) { this.fixesMadeForOthers = fixesMadeForOthers; }
+    public double getBugRate() { return bugRate; }
+    public void setBugRate(double bugRate) { this.bugRate = bugRate; }
 
-    public int getEnhancementsMade() { return enhancementsMade; }
-    public void setEnhancementsMade(int enhancementsMade) { this.enhancementsMade = enhancementsMade; }
+    public List<BugDetail> getBugDetails() { return bugDetails; }
+    public void setBugDetails(List<BugDetail> bugDetails) { this.bugDetails = bugDetails; }
 
-    public int getRepeatedChangeCount() { return repeatedChangeCount; }
-    public void setRepeatedChangeCount(int repeatedChangeCount) { this.repeatedChangeCount = repeatedChangeCount; }
-
-    public double getEfficiencyScore() { return efficiencyScore; }
-    public void setEfficiencyScore(double efficiencyScore) { this.efficiencyScore = efficiencyScore; }
+    public List<FixDetail> getFixDetails() { return fixDetails; }
+    public void setFixDetails(List<FixDetail> fixDetails) { this.fixDetails = fixDetails; }
 }

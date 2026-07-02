@@ -21,7 +21,11 @@ import java.util.Map;
  *
  * 每个 RepeatedChange 独立调用 LLM，通过 max_tokens=256 控制响应长度。
  * 单次失败不阻塞后续调用，失败条目标记为 UNCERTAIN。
+ *
+ * @deprecated v2 已用 AI 提交分类 + git blame 反向溯源替代。
+ * 不再需要 LLM 逐个判断 FIX/ENHANCE。
  */
+@Deprecated
 @Component
 public class ChangeIntentClassifier {
 

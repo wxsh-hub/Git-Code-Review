@@ -43,7 +43,11 @@ import java.util.*;
  * 3. 对每个提交，获取父提交到当前提交的 tree diff
  * 4. 解析 diff hunk，更新行所有权映射
  * 5. 当新提交的作者与行前一所有者不同时，记录为 RepeatedChange
+ *
+ * @deprecated v2 已用 {@code DeveloperEfficiencyService.analyzeFixes()} 替代。
+ * 新方案基于 AI 提交分类 + git blame 反向溯源，不需要全量 churn 检测。
  */
+@Deprecated
 @Component
 public class CodeChurnDetector {
 

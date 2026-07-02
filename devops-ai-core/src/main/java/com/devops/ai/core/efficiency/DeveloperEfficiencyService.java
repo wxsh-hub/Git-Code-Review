@@ -1,105 +1,399 @@
 package com.devops.ai.core.efficiency;
 
-import com.devops.ai.core.efficiency.classifier.ChangeIntentClassifier;
-import com.devops.ai.core.efficiency.detector.CodeChurnDetector;
 import com.devops.ai.core.efficiency.model.*;
+import com.devops.ai.core.model.Category;
 import com.devops.ai.core.model.Commit;
 import com.devops.ai.infrastructure.entity.ProjectConfig;
+import com.devops.ai.infrastructure.util.ConfigEncryptor;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.TransportConfigCallback;
+import org.eclipse.jgit.blame.BlameResult;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
+import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.ObjectReader;
+import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.TransportHttp;
+import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
+import org.eclipse.jgit.transport.http.HttpConnection;
+import org.eclipse.jgit.transport.http.HttpConnectionFactory;
+import org.eclipse.jgit.transport.http.JDKHttpConnectionFactory;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import org.eclipse.jgit.util.io.DisabledOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import javax.net.ssl.*;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 /**
- * 编排完整的开发者效率分析流水线：
- * detect（检测重复修改）→ classify（AI 分类意图）→ aggregate（聚合统计）→ report
+ * 编排开发者效率分析流水线（v2）：
+ * 基于 AI 提交分类结果取 "Bug修复" 类 commit，通过 JGit blame 反向溯源 bug 引入者。
+ *
+ * <p>不再使用全量 churn 检测和 LLM FIX/ENHANCE 分类。</p>
  */
 @Service
 public class DeveloperEfficiencyService {
 
     private static final Logger log = LoggerFactory.getLogger(DeveloperEfficiencyService.class);
 
-    /** 被修复问题的扣分权重（越高，修复他人的代码对评分影响越大） */
-    private static final double FIX_RECEIVED_PENALTY = 2.0;
+    private static final String CLONE_DIR = System.getProperty("user.dir") + "/.git-clones";
 
-    private final CodeChurnDetector churnDetector;
-    private final ChangeIntentClassifier intentClassifier;
+    private final ConfigEncryptor configEncryptor;
     private final EfficiencyReportGenerator reportGenerator;
 
-    public DeveloperEfficiencyService(CodeChurnDetector churnDetector,
-                                       ChangeIntentClassifier intentClassifier,
+    public DeveloperEfficiencyService(ConfigEncryptor configEncryptor,
                                        EfficiencyReportGenerator reportGenerator) {
-        this.churnDetector = churnDetector;
-        this.intentClassifier = intentClassifier;
+        this.configEncryptor = configEncryptor;
         this.reportGenerator = reportGenerator;
     }
 
     /**
-     * 完整分析入口：检测 → 分类 → 聚合 → 生成报告。
+     * 完整分析入口（v2）：基于 AI 分类的 "Bug修复" commits + git blame 追溯。
      *
-     * @return Markdown 格式的分析报告段落（可合并到审查报告末尾）
+     * @param allCommits 所有 commit
+     * @param categories AI 分类结果（包含 "Bug修复" category）
+     * @param config     项目配置
+     * @return Markdown 格式的分析报告段落
      */
-    public String analyzeAndGenerateReport(List<Commit> commits, ProjectConfig config,
-                                            String sinceHash, String untilHash) {
-        EfficiencyAnalysisResult result = analyze(commits, config, sinceHash, untilHash);
+    public String analyzeAndGenerateReport(List<Commit> allCommits,
+                                            List<Category> categories,
+                                            ProjectConfig config,
+                                            String sinceHash,
+                                            String untilHash) {
+        EfficiencyAnalysisResult result = analyzeFixes(allCommits, categories, config, sinceHash, untilHash);
         return reportGenerator.generate(result);
     }
 
     /**
-     * 执行完整的效率分析，不生成报告。
+     * 核心方法：只处理 "Bug修复" 分类的 commit，用 git blame 追溯 bug 引入者。
      */
-    public EfficiencyAnalysisResult analyze(List<Commit> commits, ProjectConfig config,
-                                             String sinceHash, String untilHash) {
+    public EfficiencyAnalysisResult analyzeFixes(List<Commit> allCommits,
+                                                  List<Category> categories,
+                                                  ProjectConfig config,
+                                                  String sinceHash,
+                                                  String untilHash) {
         long startTime = System.currentTimeMillis();
         EfficiencyAnalysisResult result = new EfficiencyAnalysisResult();
         result.setProjectName(config.getName());
         result.setBranch(config.getDefaultBranch());
         result.setCommitRange(sinceHash + ".." + untilHash);
 
-        // Step 1: Ensure repo cloned
-        File cloneDir = churnDetector.ensureCloned(config);
+        // Extract "Bug修复" commits
+        List<Commit> fixCommits = extractFixCommits(categories);
+        if (fixCommits.isEmpty()) {
+            log.warn("No 'Bug修复' commits found in AI classification results");
+            result.setAnalysisTimeMs(System.currentTimeMillis() - startTime);
+            result.setDeveloperEfficiencies(buildEmptyEfficiencies(allCommits));
+            return result;
+        }
+        log.info("Found {} 'Bug修复' commits from AI classification", fixCommits.size());
+        result.setTotalFixCommits(fixCommits.size());
 
-        // Step 2: Detect repeated changes
-        log.info("Starting churn detection for efficiency analysis...");
-        List<RepeatedChange> repeatedChanges = churnDetector.detect(commits, cloneDir, sinceHash, untilHash);
-        log.info("Detected {} repeated changes", repeatedChanges.size());
+        // Ensure repo cloned
+        File cloneDir = ensureCloned(config);
 
-        // Step 3: AI classification
-        if (!repeatedChanges.isEmpty()) {
-            log.info("Starting AI intent classification for {} repeated changes...", repeatedChanges.size());
-            intentClassifier.classifyAll(repeatedChanges);
+        // Trace each fix commit back to the bug introducer via git blame
+        List<DeveloperEfficiency.BugDetail> allBugDetails = new ArrayList<>();
+        try (Git git = Git.open(cloneDir)) {
+            for (int i = 0; i < fixCommits.size(); i++) {
+                Commit fixCommit = fixCommits.get(i);
+                try {
+                    List<DeveloperEfficiency.BugDetail> bugs = traceBugIntroducers(git, fixCommit);
+                    allBugDetails.addAll(bugs);
+                } catch (Exception e) {
+                    log.warn("Failed to trace bug for fix commit {}: {}",
+                            fixCommit.getId() != null ? fixCommit.getId().substring(0, 8) : "?", e.getMessage());
+                }
+                if ((i + 1) % 10 == 0 || (i + 1) == fixCommits.size()) {
+                    log.info("Traced {}/{} fix commits, found {} bug details",
+                            i + 1, fixCommits.size(), allBugDetails.size());
+                }
+            }
+        } catch (Exception e) {
+            log.error("Failed to open git repo for blame: {}", e.getMessage(), e);
         }
 
-        result.setRepeatedChanges(repeatedChanges);
+        result.setAllBugDetails(allBugDetails);
 
-        // Step 4: Aggregate per-developer metrics
-        Map<String, DeveloperEfficiency> devMap = aggregate(commits, repeatedChanges);
+        // Aggregate per-developer metrics
+        Map<String, DeveloperEfficiency> devMap = aggregateFromBugs(allCommits, allBugDetails, fixCommits);
         List<DeveloperEfficiency> efficiencies = new ArrayList<>(devMap.values());
-        // Sort by efficiency score descending
-        efficiencies.sort((a, b) -> Double.compare(b.getEfficiencyScore(), a.getEfficiencyScore()));
+        efficiencies.sort((a, b) -> Double.compare(b.getBugsIntroduced(), a.getBugsIntroduced()));
         result.setDeveloperEfficiencies(efficiencies);
 
         result.setAnalysisTimeMs(System.currentTimeMillis() - startTime);
-        log.info("Efficiency analysis complete in {}ms for {} developers",
-                result.getAnalysisTimeMs(), efficiencies.size());
+        log.info("Efficiency analysis (v2 blame) complete in {}ms: {} fix commits, {} bugs, {} developers",
+                result.getAnalysisTimeMs(), fixCommits.size(), allBugDetails.size(), efficiencies.size());
 
         return result;
     }
 
+    // ==================== Blame Logic ====================
+
     /**
-     * 聚合开发者指标。
-     * 基于提交列表统计基本数量，基于 RepeatedChange 的 AI 分类结果统计 fix/enhance 数量。
+     * 对一个 fix commit，通过 git blame 追溯被修改的每一行的原始作者。
+     *
+     * <p>算法：</p>
+     * <ol>
+     *   <li>获取 parent → fix 的 diff（只关注被修改/删除的行）</li>
+     *   <li>在 parent 版本上对每个被修改的文件运行 git blame</li>
+     *   <li>对每个 hunk 中 old 版本被改动/删除的行，查出 blame 作者和 commit</li>
+     *   <li>按作者去重（同一个人多行合并），多人均摊 1/N 份额</li>
+     * </ol>
      */
-    Map<String, DeveloperEfficiency> aggregate(List<Commit> commits,
-                                                List<RepeatedChange> repeatedChanges) {
+    List<DeveloperEfficiency.BugDetail> traceBugIntroducers(Git git, Commit fixCommit) throws Exception {
+        List<DeveloperEfficiency.BugDetail> bugDetails = new ArrayList<>();
+
+        String fixHash = fixCommit.getId();
+        List<String> parentIds = fixCommit.getParentIds();
+
+        // Skip merge commits and root commits (no parent)
+        if (parentIds == null || parentIds.isEmpty() || parentIds.size() > 1) {
+            log.warn("Fix commit {} skipped: parentIds={}", fixHash.substring(0, Math.min(8, fixHash.length())),
+                    parentIds == null ? "null" : parentIds.size() + " parents");
+            return bugDetails;
+        }
+
+        String parentHash = parentIds.get(0);
+        ObjectId parentId = git.getRepository().resolve(parentHash + "^{commit}");
+        ObjectId fixId = git.getRepository().resolve(fixHash + "^{commit}");
+        if (parentId == null || fixId == null) {
+            log.warn("Cannot resolve fix commit {} or parent {} in repo",
+                    fixHash.substring(0, Math.min(8, fixHash.length())),
+                    parentHash.substring(0, Math.min(8, parentHash.length())));
+            return bugDetails;
+        }
+
+        String fixAuthor = fixCommit.getAuthorName();
+        String fixMsg = fixCommit.getMessage();
+        String fixDate = formatDate(fixCommit.getCreatedAt());
+
+        log.info("Tracing fix commit {} by {}: {}", fixHash.substring(0, Math.min(8, fixHash.length())),
+                fixAuthor, truncateMsg(fixMsg));
+
+        try (RevWalk revWalk = new RevWalk(git.getRepository());
+             ObjectReader reader = git.getRepository().newObjectReader()) {
+
+            RevCommit parentCommit = revWalk.parseCommit(parentId);
+            RevCommit fixRevCommit = revWalk.parseCommit(fixId);
+
+            // Get diff between parent and fix
+            CanonicalTreeParser parentTree = new CanonicalTreeParser();
+            parentTree.reset(reader, parentCommit.getTree().getId());
+            CanonicalTreeParser fixTreeParser = new CanonicalTreeParser();
+            fixTreeParser.reset(reader, fixRevCommit.getTree().getId());
+
+            List<DiffEntry> diffs = git.diff()
+                    .setOldTree(parentTree)
+                    .setNewTree(fixTreeParser)
+                    .call();
+
+            log.info("  Fix {} has {} diffs", fixHash.substring(0, Math.min(8, fixHash.length())), diffs.size());
+
+            for (DiffEntry diff : diffs) {
+                // Skip deleted/renamed/binary files
+                if (diff.getChangeType() == DiffEntry.ChangeType.DELETE) continue;
+
+                String filePath = diff.getNewPath();
+                if (filePath == null || filePath.isEmpty()) {
+                    filePath = diff.getOldPath();
+                }
+                if (filePath == null) continue;
+
+                // Get the diff text to parse hunks
+                String diffText;
+                try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                    DiffFormatter df = new DiffFormatter(out);
+                    df.setRepository(git.getRepository());
+                    df.setContext(0);  // No context, only changed lines
+                    df.format(diff);
+                    diffText = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                }
+
+                // Parse hunks to get old line ranges (the lines that were changed in parent)
+                List<int[]> oldLineRanges = parseHunkRanges(diffText);
+                if (oldLineRanges.isEmpty()) {
+                    log.warn("  No hunk ranges parsed from diff for {} ({} bytes)", filePath, diffText.length());
+                    continue;
+                }
+
+                // Run git blame on the parent version of this file
+                BlameResult blame;
+                try {
+                    blame = git.blame()
+                            .setFilePath(filePath)
+                            .setStartCommit(parentId)
+                            .call();
+                } catch (Exception e) {
+                    log.warn("Cannot blame {} at {}: {}", filePath, parentHash.substring(0, Math.min(8, parentHash.length())), e.getMessage());
+                    continue;
+                }
+
+                if (blame == null) {
+                    log.debug("Blame returned null for {} at {}", filePath, parentHash.substring(0, 8));
+                    continue;
+                }
+
+                int totalLines = blame.getResultContents().size();
+                log.info("  Blame {}: {} lines, {} hunk ranges", filePath, totalLines, oldLineRanges.size());
+
+                // Collect blame results for each changed line
+                // Map: blameAuthor -> {commitId, lineCount}
+                Map<String, BlameLineInfo> authorMap = new LinkedHashMap<>();
+                int selfFixLines = 0;
+                int otherFixLines = 0;
+                int outOfRange = 0;
+                for (int[] range : oldLineRanges) {
+                    for (int line = range[0]; line <= range[1]; line++) {
+                        // JGit blame is 0-indexed for lines, but diff hunks use 1-indexed
+                        int blameLineIdx = line - 1;
+                        if (blameLineIdx < 0 || blameLineIdx >= totalLines) {
+                            outOfRange++;
+                            continue;
+                        }
+
+                        try {
+                            PersonIdent sourceAuthor = blame.getSourceAuthor(blameLineIdx);
+                            RevCommit sourceCommit = blame.getSourceCommit(blameLineIdx);
+                            if (sourceAuthor != null && sourceCommit != null) {
+                                String blameAuthor = sourceAuthor.getName();
+                                String blameCommitId = sourceCommit.getName();
+                                if (blameAuthor != null) {
+                                    otherFixLines++;
+                                    authorMap.computeIfAbsent(blameAuthor,
+                                            k -> new BlameLineInfo(blameCommitId,
+                                                    sourceCommit.getShortMessage(),
+                                                    sourceAuthor.getName()))
+                                            .incrementLine();
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.debug("Blame line {} in {} failed: {}", line, filePath, e.getMessage());
+                        }
+                    }
+                }
+
+                if (!authorMap.isEmpty()) {
+                    log.info("Blame found {} different author(s) for fix {} -> {} (self-fix: {} lines, other-fix: {} lines, oob: {})",
+                            authorMap.size(),
+                            fixHash.substring(0, Math.min(8, fixHash.length())),
+                            filePath,
+                            selfFixLines, otherFixLines, outOfRange);
+                } else if (otherFixLines == 0 && (selfFixLines > 0 || outOfRange > 0)) {
+                    log.info("Blame for fix {} -> {}: all {} changed lines belong to fix author (self-fix={}, oob={})",
+                            fixHash.substring(0, Math.min(8, fixHash.length())),
+                            filePath,
+                            selfFixLines + otherFixLines + outOfRange,
+                            selfFixLines, outOfRange);
+                }
+
+                // Create BugDetail for each unique blame author in this file
+                if (!authorMap.isEmpty()) {
+                    double sharePerAuthor = 1.0 / authorMap.size();
+                    for (BlameLineInfo info : authorMap.values()) {
+                        DeveloperEfficiency.BugDetail detail = new DeveloperEfficiency.BugDetail();
+                        detail.setCommitId(info.commitId);
+                        detail.setCommitMessage(info.commitMessage);
+                        detail.setIntroducedBy(info.authorName);
+                        detail.setCreatedAt(""); // We don't have the date for the blame commit easily
+                        detail.setFilePath(filePath);
+                        detail.setLineCount(info.lineCount);
+                        detail.setShare(sharePerAuthor);
+                        detail.setFixedBy(fixAuthor);
+                        detail.setFixedCommitId(fixHash);
+                        detail.setFixedMessage(fixMsg);
+                        detail.setFixedAt(fixDate);
+                        bugDetails.add(detail);
+                    }
+                }
+            }
+        }
+        return bugDetails;
+    }
+
+    /**
+     * Parse unified diff text to extract old-line ranges (the lines changed/deleted).
+     * Returns list of [start, end] 1-indexed inclusive pairs.
+     */
+    List<int[]> parseHunkRanges(String diffText) {
+        List<int[]> ranges = new ArrayList<>();
+        if (diffText == null || diffText.isEmpty()) return ranges;
+
+        String[] lines = diffText.split("\n");
+        for (String line : lines) {
+            // Match hunk header: @@ -oldStart[,oldCount] +newStart[,newCount] @@
+            if (line.startsWith("@@")) {
+                int endIdx = line.indexOf("@@", 2);
+                if (endIdx < 0) continue;
+                String headerPart = line.substring(2, endIdx).trim();
+                String[] parts = headerPart.split("\\s+");
+                if (parts.length < 1) continue;
+
+                // Parse old range: -oldStart[,oldCount]
+                String oldPart = parts[0];
+                if (!oldPart.startsWith("-")) continue;
+                oldPart = oldPart.substring(1);
+                int comma = oldPart.indexOf(',');
+                int oldStart, oldCount;
+                if (comma > 0) {
+                    oldStart = Integer.parseInt(oldPart.substring(0, comma));
+                    oldCount = Integer.parseInt(oldPart.substring(comma + 1));
+                } else {
+                    oldStart = Integer.parseInt(oldPart);
+                    oldCount = 1;
+                }
+                if (oldCount > 0) {
+                    ranges.add(new int[]{oldStart, oldStart + oldCount - 1});
+                }
+            }
+        }
+        return ranges;
+    }
+
+    /**
+     * Internal helper to track blame info per author.
+     */
+    private static class BlameLineInfo {
+        final String commitId;
+        final String commitMessage;
+        final String authorName;
+        int lineCount;
+
+        BlameLineInfo(String commitId, String commitMessage, String authorName) {
+            this.commitId = commitId;
+            this.commitMessage = commitMessage;
+            this.authorName = authorName;
+            this.lineCount = 0;
+        }
+
+        void incrementLine() { lineCount++; }
+    }
+
+    // ==================== Aggregation ====================
+
+    /**
+     * Aggregate per-developer stats from bug details and fix commits.
+     */
+    Map<String, DeveloperEfficiency> aggregateFromBugs(List<Commit> allCommits,
+                                                        List<DeveloperEfficiency.BugDetail> allBugDetails,
+                                                        List<Commit> fixCommits) {
         Map<String, DeveloperEfficiency> devMap = new LinkedHashMap<>();
 
-        // Phase 1: Basic stats from commits
-        for (Commit commit : commits) {
-            String key = commit.getAuthorName();
-            DeveloperEfficiency dev = devMap.computeIfAbsent(key, k -> {
+        // Phase 1: Count total commits per author
+        for (Commit commit : allCommits) {
+            String name = commit.getAuthorName() != null ? commit.getAuthorName() : "未知";
+            DeveloperEfficiency dev = devMap.computeIfAbsent(name, k -> {
                 DeveloperEfficiency d = new DeveloperEfficiency();
                 d.setAuthorName(k);
                 d.setAuthorEmail(commit.getAuthorEmail());
@@ -108,74 +402,172 @@ public class DeveloperEfficiencyService {
             dev.setTotalCommits(dev.getTotalCommits() + 1);
         }
 
-        // Phase 2: Analyze repeated changes for fix/enhance
-        for (RepeatedChange rc : repeatedChanges) {
-            ChangeRecord first = rc.getFirstChange();
-            ChangeRecord last = rc.getLastChange();
+        // Phase 2: Count bugs introduced (from blame) and attach detail
+        for (DeveloperEfficiency.BugDetail bug : allBugDetails) {
+            // Bug introducer - use the blame author name from the BugDetail
+            String introducerName = bug.getIntroducedBy() != null ? bug.getIntroducedBy() : "未知";
 
-            if (first == null || last == null) continue;
+            DeveloperEfficiency dev = devMap.computeIfAbsent(introducerName, k -> {
+                DeveloperEfficiency d = new DeveloperEfficiency();
+                d.setAuthorName(k);
+                return d;
+            });
+            dev.setBugsIntroduced(dev.getBugsIntroduced() + bug.getShare());
+            dev.getBugDetails().add(bug);
 
-            String firstAuthor = first.getAuthorName();
-            String lastAuthor = last.getAuthorName();
+            // Fix for fixer
+            String fixerName = bug.getFixedBy() != null ? bug.getFixedBy() : "未知";
+            DeveloperEfficiency fixerDev = devMap.computeIfAbsent(fixerName, k -> {
+                DeveloperEfficiency d = new DeveloperEfficiency();
+                d.setAuthorName(k);
+                return d;
+            });
 
-            // Increment repeated change count for both
-            DeveloperEfficiency firstDev = devMap.computeIfAbsent(firstAuthor, k -> newDev(k, first.getAuthorEmail()));
-            DeveloperEfficiency lastDev = devMap.computeIfAbsent(lastAuthor, k -> newDev(k, last.getAuthorEmail()));
-
-            firstDev.setRepeatedChangeCount(firstDev.getRepeatedChangeCount() + 1);
-            lastDev.setRepeatedChangeCount(lastDev.getRepeatedChangeCount() + 1);
-
-            // If different authors, analyze intent
-            if (!firstAuthor.equals(lastAuthor)) {
-                if (rc.isFix()) {
-                    // The first author introduced a bug → fixesIntroduced++
-                    firstDev.setFixesIntroduced(firstDev.getFixesIntroduced() + 1);
-                    // The last author fixed it → fixesMadeForOthers++
-                    lastDev.setFixesMadeForOthers(lastDev.getFixesMadeForOthers() + 1);
-                } else if (rc.isEnhance()) {
-                    // Enhancement by the last author
-                    lastDev.setEnhancementsMade(lastDev.getEnhancementsMade() + 1);
-                }
-                // UNCERTAIN doesn't affect either count
-            }
+            // Create FixDetail for fixer
+            DeveloperEfficiency.FixDetail fixDetail = new DeveloperEfficiency.FixDetail();
+            fixDetail.setCommitId(bug.getFixedCommitId());
+            fixDetail.setCommitMessage(bug.getFixedMessage());
+            fixDetail.setCreatedAt(bug.getFixedAt());
+            fixDetail.setIntroducedBy(introducerName);
+            fixDetail.setIntroducedByCommitId(bug.getCommitId());
+            fixDetail.setIntroducedByMessage(bug.getCommitMessage());
+            fixDetail.setFilePath(bug.getFilePath());
+            fixerDev.getFixDetails().add(fixDetail);
+            fixerDev.setFixesMade(fixerDev.getFixesMade() + 1);
         }
 
-        // Phase 3: Calculate efficiency scores
+        // Phase 3: Calculate bug rate
         for (DeveloperEfficiency dev : devMap.values()) {
-            double score = calculateScore(dev);
-            dev.setEfficiencyScore(score);
+            int totalCommits = dev.getTotalCommits();
+            double bugsIntroduced = dev.getBugsIntroduced();
+            dev.setBugRate(totalCommits > 0 ? bugsIntroduced / totalCommits : 0);
         }
 
         return devMap;
     }
 
+    private List<DeveloperEfficiency> buildEmptyEfficiencies(List<Commit> allCommits) {
+        Map<String, DeveloperEfficiency> devMap = new LinkedHashMap<>();
+        for (Commit commit : allCommits) {
+            String name = commit.getAuthorName() != null ? commit.getAuthorName() : "未知";
+            DeveloperEfficiency dev = devMap.computeIfAbsent(name, k -> {
+                DeveloperEfficiency d = new DeveloperEfficiency();
+                d.setAuthorName(k);
+                return d;
+            });
+            dev.setTotalCommits(dev.getTotalCommits() + 1);
+        }
+        return new ArrayList<>(devMap.values());
+    }
+
+    // ==================== Git Clone/Fetch ====================
+
     /**
-     * 计算开发者效率评分。
-     * 公式: linesChanged 归一化后的贡献度，减去被修复问题的扣分。
-     *
-     * 最终公式: baseScore - fixesIntroduced * FIX_RECEIVED_PENALTY + fixesMadeForOthers * 1.5 + enhancementsMade * 1.0
-     * baseScore 基于 commit 数量（归一化到 0-100 范围）
+     * Ensure the project repository is cloned locally (same pattern as CodeChurnDetector).
      */
-    private double calculateScore(DeveloperEfficiency dev) {
-        // Base score from commits (0-50)
-        double baseScore = Math.min(dev.getTotalCommits() * 2.0, 50.0);
-
-        // Bonus for fixing others (+1.5 per fix)
-        double fixBonus = dev.getFixesMadeForOthers() * 1.5;
-
-        // Bonus for enhancements (+1.0 per enhancement)
-        double enhanceBonus = dev.getEnhancementsMade() * 1.0;
-
-        // Penalty for introducing bugs that others had to fix (-2.0 per introduced issue)
-        double penalty = dev.getFixesIntroduced() * FIX_RECEIVED_PENALTY;
-
-        return Math.max(0, baseScore + fixBonus + enhanceBonus - penalty);
+    File ensureCloned(ProjectConfig config) {
+        File cloneDir = resolveCloneDir(config);
+        Git git = null;
+        try {
+            if (cloneDir.exists()) {
+                git = Git.open(cloneDir);
+                git.fetch()
+                        .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
+                        .call();
+            } else {
+                cloneDir.getParentFile().mkdirs();
+                git = Git.cloneRepository()
+                        .setURI(config.getGitlabUrl())
+                        .setDirectory(cloneDir)
+                        .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
+                        .setCloneAllBranches(true)
+                        .call();
+            }
+        } catch (Exception e) {
+            log.warn("Clone/fetch failed: {}", e.getMessage());
+        } finally {
+            if (git != null) git.close();
+        }
+        return cloneDir;
     }
 
-    private DeveloperEfficiency newDev(String name, String email) {
-        DeveloperEfficiency d = new DeveloperEfficiency();
-        d.setAuthorName(name);
-        d.setAuthorEmail(email);
-        return d;
+    File resolveCloneDir(ProjectConfig config) {
+        String safeName = config.getName() != null
+                ? config.getName().replaceAll("[^a-zA-Z0-9_-]", "_")
+                : "repo";
+        return new File(CLONE_DIR, safeName + "_" + config.getId());
     }
+
+    private UsernamePasswordCredentialsProvider createCredentials(ProjectConfig config) {
+        try {
+            String decrypted = configEncryptor.decrypt(config.getCredentials());
+            int idx = decrypted.indexOf(':');
+            if (idx > 0) {
+                return new UsernamePasswordCredentialsProvider(
+                        decrypted.substring(0, idx), decrypted.substring(idx + 1));
+            }
+            return new UsernamePasswordCredentialsProvider("oauth2", decrypted);
+        } catch (Exception e) {
+            return new UsernamePasswordCredentialsProvider("", "");
+        }
+    }
+
+    // ==================== Utilities ====================
+
+    /**
+     * Extract "Bug修复" commits from the AI classifier's category results.
+     */
+    private List<Commit> extractFixCommits(List<Category> categories) {
+        List<Commit> fixCommits = new ArrayList<>();
+        if (categories == null) return fixCommits;
+        for (Category cat : categories) {
+            if ("Bug修复".equals(cat.getName()) && cat.getCommits() != null) {
+                fixCommits.addAll(cat.getCommits());
+            }
+        }
+        // Sort by time (oldest first) for blame to work correctly
+        fixCommits.sort(Comparator.comparing(Commit::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())));
+        return fixCommits;
+    }
+
+    private String formatDate(Date date) {
+        if (date == null) return "";
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(date);
+    }
+
+    private String truncateMsg(String msg) {
+        if (msg == null) return "";
+        String trimmed = msg.replace('\n', ' ').trim();
+        return trimmed.length() > 80 ? trimmed.substring(0, 80) + "..." : trimmed;
+    }
+
+    // ==================== SSL Bypass ====================
+
+    static final TransportConfigCallback INSECURE_SSL_CALLBACK = transport -> {
+        if (transport instanceof TransportHttp) {
+            TransportHttp httpTransport = (TransportHttp) transport;
+            httpTransport.setHttpConnectionFactory(new HttpConnectionFactory() {
+                @Override
+                public HttpConnection create(URL url) throws java.io.IOException {
+                    return new JDKHttpConnectionFactory() {
+                        @Override
+                        public HttpConnection create(URL url) throws java.io.IOException {
+                            HttpConnection conn = super.create(url);
+                            if (conn instanceof javax.net.ssl.HttpsURLConnection) {
+                                // SSL is already disabled globally in DevOpsAiApplication
+                            }
+                            return conn;
+                        }
+                    }.create(url);
+                }
+
+                @Override
+                public HttpConnection create(URL url, java.net.Proxy proxy) throws java.io.IOException {
+                    return create(url);
+                }
+            });
+        }
+    };
 }

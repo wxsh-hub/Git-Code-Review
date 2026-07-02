@@ -5,6 +5,9 @@ import java.util.List;
 
 /**
  * 开发者效率分析的完整结果。
+ *
+ * <p>v2: 基于 AI 提交分类 + git blame 反向溯源，
+ * 替代 v1 的全量 churn 检测 + LLM 分类。</p>
  */
 public class EfficiencyAnalysisResult {
 
@@ -14,7 +17,12 @@ public class EfficiencyAnalysisResult {
     private long analysisTimeMs;
 
     private List<DeveloperEfficiency> developerEfficiencies = new ArrayList<>();
-    private List<RepeatedChange> repeatedChanges = new ArrayList<>();
+
+    /** 所有 bug 详情（跨开发者汇总，供报告使用） */
+    private List<DeveloperEfficiency.BugDetail> allBugDetails = new ArrayList<>();
+
+    /** fix commit 总数 */
+    private int totalFixCommits;
 
     /** 生成的 Markdown 总结报告 */
     private String summaryReport;
@@ -34,8 +42,11 @@ public class EfficiencyAnalysisResult {
     public List<DeveloperEfficiency> getDeveloperEfficiencies() { return developerEfficiencies; }
     public void setDeveloperEfficiencies(List<DeveloperEfficiency> developerEfficiencies) { this.developerEfficiencies = developerEfficiencies; }
 
-    public List<RepeatedChange> getRepeatedChanges() { return repeatedChanges; }
-    public void setRepeatedChanges(List<RepeatedChange> repeatedChanges) { this.repeatedChanges = repeatedChanges; }
+    public List<DeveloperEfficiency.BugDetail> getAllBugDetails() { return allBugDetails; }
+    public void setAllBugDetails(List<DeveloperEfficiency.BugDetail> allBugDetails) { this.allBugDetails = allBugDetails; }
+
+    public int getTotalFixCommits() { return totalFixCommits; }
+    public void setTotalFixCommits(int totalFixCommits) { this.totalFixCommits = totalFixCommits; }
 
     public String getSummaryReport() { return summaryReport; }
     public void setSummaryReport(String summaryReport) { this.summaryReport = summaryReport; }

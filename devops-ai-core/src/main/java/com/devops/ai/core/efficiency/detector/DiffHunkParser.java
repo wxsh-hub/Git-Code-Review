@@ -12,7 +12,11 @@ import java.util.regex.Pattern;
 /**
  * 解析 unified diff 格式，将每个 hunk 提取为结构化的 DiffHunk 对象。
  * 提取行号范围和前后文，供重复修改检测和 AI 分类使用。
+ *
+ * @deprecated v2 已用 AI 提交分类 + git blame 反向溯源替代，
+ * 不再需要全量 churn 检测。
  */
+@Deprecated
 public class DiffHunkParser {
 
     private static final Logger log = LoggerFactory.getLogger(DiffHunkParser.class);
