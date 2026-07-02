@@ -301,8 +301,8 @@ public class GenerationOrchestrator {
             try {
                 ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
                 if (projectConfig != null) {
-                    String reviewSinceHash = request.getSinceHash();
-                    String reviewUntilHash = request.getUntilHash();
+                    String reviewSinceHash = emptyToNull(request.getSinceHash());
+                    String reviewUntilHash = emptyToNull(request.getUntilHash());
 
                     // If no hash range provided, scan the entire project from root commit
                     if (reviewSinceHash == null && reviewUntilHash == null) {
