@@ -60,9 +60,11 @@ public class LlmClient {
             ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
 
             if (response.getBody() != null) {
+                @SuppressWarnings("unchecked")
                 List<Map<String, Object>> choices = (List<Map<String, Object>>) response.getBody().get("choices");
                 if (choices != null && !choices.isEmpty()) {
                     Map<String, Object> choice = choices.get(0);
+                    @SuppressWarnings("unchecked")
                     Map<String, Object> respMessage = (Map<String, Object>) choice.get("message");
                     if (respMessage != null && respMessage.get("content") != null) {
                         return respMessage.get("content").toString();
