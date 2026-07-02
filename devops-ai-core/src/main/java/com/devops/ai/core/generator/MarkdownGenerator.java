@@ -114,7 +114,7 @@ public class MarkdownGenerator implements DocumentFormatGenerator {
 
                 // Low-frequency: list individual commits
                 if (stats.isLowFrequency() && stats.getCommitDetails() != null) {
-                    content.append("\n#### ⚠ 低频贡献者详细提交记录\n\n");
+                    content.append("\n#### ").append(stats.getAuthorName()).append("提交记录\n\n");
                     content.append("| 提交ID | 时间 | 分类 | 提交信息 |\n");
                     content.append("|--------|------|------|----------|\n");
                     for (ContributorStats.CommitDetail cd : stats.getCommitDetails()) {
