@@ -122,14 +122,6 @@
                         </label>
                     </div>
 
-                    <div id="reviewFormatGroup" style="display: none;" class="mt-4 p-4 bg-[#0A0E14] rounded-lg border border-[#1E293B]">
-                        <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">审查文档格式</label>
-                        <select name="reviewFormat" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none">
-                            <option value="markdown" class="bg-[#0F172A]">Markdown</option>
-                            <option value="html" class="bg-[#0F172A]">HTML</option>
-                        </select>
-                    </div>
-
                     <div class="mt-6">
                         <button type="submit" class="btn-primary inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-[#22C55E] text-[#0F172A] text-sm font-semibold border-none cursor-pointer">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -262,10 +254,6 @@
             document.getElementById('timeRangeGroup').style.display = this.value === 'time' ? '' : 'none';
             document.getElementById('hashRangeGroup').style.display = this.value === 'hash' ? '' : 'none';
         });
-    });
-
-    document.getElementById('useCodeReview').addEventListener('change', function() {
-        document.getElementById('reviewFormatGroup').style.display = this.checked ? '' : 'none';
     });
 </script>
 </body>
