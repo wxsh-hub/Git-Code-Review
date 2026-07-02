@@ -7,22 +7,30 @@ import com.devops.ai.core.model.Commit;
 import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
 import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.TransportConfigCallback;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
+import org.eclipse.jgit.transport.TransportHttp;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
-import org.eclipse.jgit.treewalk.AbstractTreeIterator;
+import org.eclipse.jgit.transport.http.HttpConnection;
+import org.eclipse.jgit.transport.http.HttpConnectionFactory;
+import org.eclipse.jgit.transport.http.JDKHttpConnectionFactory;
 import org.eclipse.jgit.treewalk.CanonicalTreeParser;
-import org.eclipse.jgit.util.io.DisabledOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
+import javax.net.ssl.*;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.util.*;
 
 /**
@@ -36,13 +44,51 @@ import java.util.*;
  * 4. 解析 diff hunk，更新行所有权映射
  * 5. 当新提交的作者与行前一所有者不同时，记录为 RepeatedChange
  */
+@Component
 public class CodeChurnDetector {
 
     private static final Logger log = LoggerFactory.getLogger(CodeChurnDetector.class);
 
     private static final String CLONE_DIR = System.getProperty("user.dir") + "/.git-clones";
     private static final int MAX_DIFF_SIZE = 100_000; // 单个文件 diff 超过此大小跳过
-    private static final int MAX_CONTEXT_LINES = 10;  // AI 分类时携带的上下文字段行数
+
+    // === SSL 绕过（内网自签名证书），与 GitCloneService 保持一致 ===
+
+    private static final TrustManager[] TRUST_ALL = new TrustManager[]{
+            new X509TrustManager() {
+                public X509Certificate[] getAcceptedIssuers() { return null; }
+                public void checkClientTrusted(X509Certificate[] certs, String authType) { }
+                public void checkServerTrusted(X509Certificate[] certs, String authType) { }
+            }
+    };
+
+    private static final TransportConfigCallback INSECURE_SSL_CALLBACK = transport -> {
+        if (transport instanceof TransportHttp) {
+            HttpConnectionFactory delegate = new JDKHttpConnectionFactory();
+            ((TransportHttp) transport).setHttpConnectionFactory(new HttpConnectionFactory() {
+                @Override
+                public HttpConnection create(URL url) throws java.io.IOException {
+                    HttpConnection conn = delegate.create(url);
+                    configureInsecure(conn);
+                    return conn;
+                }
+                @Override
+                public HttpConnection create(URL url, java.net.Proxy proxy) throws java.io.IOException {
+                    HttpConnection conn = delegate.create(url, proxy);
+                    configureInsecure(conn);
+                    return conn;
+                }
+                private void configureInsecure(HttpConnection conn) {
+                    try {
+                        conn.configure(null, TRUST_ALL, new SecureRandom());
+                        conn.setHostnameVerifier((hostname, session) -> true);
+                    } catch (Exception e) {
+                        throw new RuntimeException("Failed to configure insecure SSL", e);
+                    }
+                }
+            });
+        }
+    };
 
     private final ConfigEncryptor configEncryptor;
     private final DiffHunkParser hunkParser;
@@ -93,11 +139,7 @@ public class CodeChurnDetector {
             Collections.reverse(revCommits);
             log.info("Walking {} commits for churn detection (oldest first)", revCommits.size());
 
-            // Build commit lookup for our model Commit objects
-            Map<String, Commit> commitLookup = buildCommitLookup(commits);
-
             // Step 2: Process each commit — build line ownership map
-            // filePath -> (lineNumber -> (authorName, changeRecord))
             Map<String, Map<Integer, LineOwnership>> ownershipMap = new LinkedHashMap<>();
             int processedCount = 0;
 
@@ -106,13 +148,11 @@ public class CodeChurnDetector {
                 if (rc.getParentCount() == 0) continue; // skip root commit
 
                 String commitId = rc.getName();
-                Commit modelCommit = commitLookup.get(commitId);
                 String authorName = rc.getAuthorIdent().getName();
                 String authorEmail = rc.getAuthorIdent().getEmailAddress();
                 Date timestamp = new Date(rc.getAuthorIdent().getWhen().getTime());
                 String message = rc.getShortMessage();
 
-                // Get diffs between parent and this commit
                 List<DiffEntry> diffs = getDiffs(git, rc);
                 if (diffs.isEmpty()) continue;
 
@@ -124,23 +164,33 @@ public class CodeChurnDetector {
 
                     String diffText = getDiffText(git, entry);
                     if (diffText == null || diffText.length() > MAX_DIFF_SIZE) {
-                        log.debug("Skipping large/binary diff for {}", filePath);
                         continue;
                     }
 
+                    Map<Integer, LineOwnership> fileOwnership =
+                            ownershipMap.computeIfAbsent(filePath, k -> new TreeMap<>());
+
                     List<DiffHunk> hunks = hunkParser.parse(diffText, filePath);
                     for (DiffHunk hunk : hunks) {
-                        int startLine = hunk.getNewLineStart();
-                        int endLine = hunk.getNewLineEnd();
+                        boolean isDelete = hunk.getOldCount() > 0 && hunk.getNewCount() == 0;
+                        boolean isAdd = hunk.getOldCount() == 0 && hunk.getNewCount() > 0;
 
-                        // Ensure entry in ownership map
-                        Map<Integer, LineOwnership> fileOwnership =
-                                ownershipMap.computeIfAbsent(filePath, k -> new TreeMap<>());
+                        // ── 重叠检测：用 oldStart/oldCount（父文件坐标系）查 ownership map ──
+                        // ownership map 存的是上次提交 newStart 坐标系 = 本次 oldStart 坐标系，刚好对齐
+                        int checkStart, checkEnd;
+                        if (isDelete || !isAdd) {
+                            // DELETE 和 MODIFY：在旧文件中占用了 oldStart..oldStart+oldCount-1
+                            checkStart = hunk.getOldStart();
+                            checkEnd = hunk.getOldStart() + Math.max(hunk.getOldCount(), 1) - 1;
+                        } else {
+                            // ADD：全新行，无旧占用，跳过重叠检测
+                            checkStart = -1;
+                            checkEnd = -2;
+                        }
 
-                        // Check for overlaps with different authors
                         String overlapAuthor = null;
                         ChangeRecord overlapRecord = null;
-                        for (int line = startLine; line <= endLine; line++) {
+                        for (int line = checkStart; line <= checkEnd; line++) {
                             LineOwnership existing = fileOwnership.get(line);
                             if (existing != null && !existing.authorName.equals(authorName)) {
                                 overlapAuthor = existing.authorName;
@@ -150,26 +200,51 @@ public class CodeChurnDetector {
                         }
 
                         if (overlapAuthor != null && overlapRecord != null) {
-                            // Found a repeated change!
                             RepeatedChange repeated = new RepeatedChange();
                             repeated.setFilePath(filePath);
 
-                            ChangeRecord newRecord = buildChangeRecord(filePath, startLine, endLine,
-                                    authorName, authorEmail, commitId, message, timestamp, hunk);
+                            ChangeRecord newRecord = buildChangeRecord(filePath,
+                                    isDelete ? checkStart : hunk.getNewStart(),
+                                    isDelete ? checkEnd   : hunk.getNewLineEnd(),
+                                    authorName, authorEmail, commitId, message, timestamp, hunk,
+                                    isDelete ? ChangeRecord.ChangeType.DELETE : ChangeRecord.ChangeType.MODIFY);
                             repeated.getRecords().add(overlapRecord);
                             repeated.getRecords().add(newRecord);
-
                             results.add(repeated);
-                            log.debug("Repeated change detected: {} lines {}-{} by {} → {}",
-                                    filePath, startLine, endLine, overlapAuthor, authorName);
+
+                            String action = isDelete ? "deleted" : "modified";
+                            log.debug("Repeated change detected: {} lines {}-{} ({}) by {} → {}",
+                                    filePath, checkStart, checkEnd, action, overlapAuthor, authorName);
                         }
 
-                        // Update ownership for all lines in this hunk
-                        ChangeRecord newRecord = buildChangeRecord(filePath, startLine, endLine,
-                                authorName, authorEmail, commitId, message, timestamp, hunk);
-                        LineOwnership ownership = new LineOwnership(authorName, newRecord);
-                        for (int line = startLine; line <= endLine; line++) {
-                            fileOwnership.put(line, ownership);
+                        // ── 所有权更新 ──
+                        // 1. 清除旧占用（MODIFY 和 DELETE）
+                        if (hunk.getOldCount() > 0) {
+                            for (int line = hunk.getOldStart();
+                                 line <= hunk.getOldStart() + hunk.getOldCount() - 1;
+                                 line++) {
+                                if (isDelete) {
+                                    // DELETE：直接移除，这些行不再存在
+                                    fileOwnership.remove(line);
+                                } else {
+                                    // MODIFY：先清除（下面会用 newStart 重新设置）
+                                    fileOwnership.remove(line);
+                                }
+                            }
+                        }
+
+                        // 2. 设置新占用（ADD 和 MODIFY）
+                        if (hunk.getNewCount() > 0) {
+                            ChangeRecord newRecord = buildChangeRecord(filePath,
+                                    hunk.getNewStart(), hunk.getNewLineEnd(),
+                                    authorName, authorEmail, commitId, message, timestamp, hunk,
+                                    isAdd ? ChangeRecord.ChangeType.ADD : ChangeRecord.ChangeType.MODIFY);
+                            LineOwnership ownership = new LineOwnership(authorName, newRecord);
+                            for (int line = hunk.getNewStart();
+                                 line <= hunk.getNewLineEnd();
+                                 line++) {
+                                fileOwnership.put(line, ownership);
+                            }
                         }
                     }
                 }
@@ -192,9 +267,6 @@ public class CodeChurnDetector {
         return results;
     }
 
-    /**
-     * 获取单个提交相对于父提交的所有文件 diff。
-     */
     private List<DiffEntry> getDiffs(Git git, RevCommit commit) {
         try {
             RevCommit parent = commit.getParent(0);
@@ -211,15 +283,12 @@ public class CodeChurnDetector {
         }
     }
 
-    /**
-     * 获取 diff entry 的 unified diff 文本。
-     */
     private String getDiffText(Git git, DiffEntry entry) {
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (DiffFormatter formatter = new DiffFormatter(out)) {
                 formatter.setRepository(git.getRepository());
-                formatter.setContext(5); // 5 lines of context
+                formatter.setContext(5);
                 formatter.format(entry);
             }
             return out.toString(StandardCharsets.UTF_8.name());
@@ -229,13 +298,11 @@ public class CodeChurnDetector {
         }
     }
 
-    /**
-     * 从 DiffHunk 和 commit 信息构建 ChangeRecord。
-     */
     private ChangeRecord buildChangeRecord(String filePath, int lineStart, int lineEnd,
                                             String authorName, String authorEmail,
                                             String commitId, String message,
-                                            Date timestamp, DiffHunk hunk) {
+                                            Date timestamp, DiffHunk hunk,
+                                            ChangeRecord.ChangeType changeType) {
         ChangeRecord record = new ChangeRecord();
         record.setFilePath(filePath);
         record.setLineStart(lineStart);
@@ -245,8 +312,8 @@ public class CodeChurnDetector {
         record.setCommitId(commitId);
         record.setCommitMessage(message);
         record.setTimestamp(timestamp);
+        record.setChangeType(changeType);
 
-        // Build a compact diff snippet for AI context
         StringBuilder snippet = new StringBuilder();
         if (hunk.getContextBefore() != null && !hunk.getContextBefore().isEmpty()) {
             snippet.append(hunk.getContextBefore()).append("\n");
@@ -262,9 +329,6 @@ public class CodeChurnDetector {
         return record;
     }
 
-    /**
-     * 构建 Commit 对象查找表（按 hash）。
-     */
     private Map<String, Commit> buildCommitLookup(List<Commit> commits) {
         Map<String, Commit> lookup = new HashMap<>();
         for (Commit c : commits) {
@@ -275,9 +339,6 @@ public class CodeChurnDetector {
         return lookup;
     }
 
-    /**
-     * 克隆或打开仓库目录（复用 GitCloneService 的模式）。
-     */
     public File resolveCloneDir(ProjectConfig config) {
         String safeName = (config.getName() != null ? config.getName() : "repo")
                 .replaceAll("[^a-zA-Z0-9_-]", "_");
@@ -285,7 +346,7 @@ public class CodeChurnDetector {
     }
 
     /**
-     * 确保仓库已克隆且为最新（fetch）。
+     * 确保仓库已克隆且为最新（fetch），使用 SSL 绕过支持内网自签名证书。
      */
     public File ensureCloned(ProjectConfig config) {
         File cloneDir = resolveCloneDir(config);
@@ -294,6 +355,7 @@ public class CodeChurnDetector {
                 Git git = Git.open(cloneDir);
                 git.fetch()
                         .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
                         .call();
                 git.close();
             } else {
@@ -302,6 +364,7 @@ public class CodeChurnDetector {
                         .setURI(config.getGitlabUrl())
                         .setDirectory(cloneDir)
                         .setCredentialsProvider(createCredentials(config))
+                        .setTransportConfigCallback(INSECURE_SSL_CALLBACK)
                         .setCloneAllBranches(true)
                         .call();
                 git.close();
@@ -321,9 +384,6 @@ public class CodeChurnDetector {
         return new UsernamePasswordCredentialsProvider("oauth2", decrypted);
     }
 
-    /**
-     * 内部类：行所有权记录。
-     */
     private static class LineOwnership {
         final String authorName;
         final ChangeRecord lastChange;

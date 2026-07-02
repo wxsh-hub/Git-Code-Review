@@ -352,17 +352,32 @@ public class GenerationOrchestrator {
             try {
                 ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
                 if (projectConfig != null) {
-                    String reviewSinceHash = request.getSinceHash();
-                    String reviewUntilHash = request.getUntilHash();
+                    String reviewSinceHash = emptyToNull(request.getSinceHash());
+                    String reviewUntilHash = emptyToNull(request.getUntilHash());
                     // Derive hash range if not specified
+                    // For churn detection, sinceHash should be the parent of the oldest commit
+                    // so that the oldest commit's changes are included in the walk
                     if (reviewSinceHash == null || reviewUntilHash == null) {
                         if (commits != null && !commits.isEmpty()) {
+                            // commits is ordered newest-first (from API), so:
+                            // commits.get(0) = newest, commits.get(size-1) = oldest
                             if (reviewUntilHash == null) reviewUntilHash = commits.get(0).getId();
-                            if (reviewSinceHash == null) reviewSinceHash = commits.get(commits.size() - 1).getId();
+                            // Use parent of the oldest commit as the starting point
+                            Commit oldestCommit = commits.get(commits.size() - 1);
+                            if (reviewSinceHash == null) {
+                                if (oldestCommit.getParentIds() != null && !oldestCommit.getParentIds().isEmpty()) {
+                                    reviewSinceHash = oldestCommit.getParentIds().get(0);
+                                } else {
+                                    // Root commit — include it directly
+                                    reviewSinceHash = oldestCommit.getId();
+                                }
+                            }
                         }
                     }
                     if (reviewSinceHash != null && reviewUntilHash != null) {
-                        log.info("Starting developer efficiency analysis...");
+                        log.info("Starting developer efficiency analysis: sinceHash={}, untilHash={}",
+                                reviewSinceHash.substring(0, Math.min(8, reviewSinceHash.length())),
+                                reviewUntilHash.substring(0, Math.min(8, reviewUntilHash.length())));
                         String efficiencySection = developerEfficiencyService.analyzeAndGenerateReport(
                                 commits, projectConfig, reviewSinceHash, reviewUntilHash);
                         if (efficiencySection != null && !efficiencySection.isEmpty()) {
@@ -476,5 +491,10 @@ public class GenerationOrchestrator {
         }
 
         return results;
+    }
+
+    /** 将空字符串转为 null，处理 Web 表单提交的空白字段 */
+    private String emptyToNull(String s) {
+        return (s != null && s.trim().isEmpty()) ? null : s;
     }
 }

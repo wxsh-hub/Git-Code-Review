@@ -106,6 +106,8 @@ public class ChangeIntentClassifier {
         ChangeRecord first = change.getFirstChange();
         ChangeRecord last = change.getLastChange();
 
+        boolean isDelete = last != null && last.isDelete();
+
         StringBuilder sb = new StringBuilder();
         sb.append("你是代码变更意图分析专家。同一个代码位置被两个开发者先后修改，请判断第二次修改的意图。\n\n");
         sb.append("文件: ").append(change.getFilePath()).append("\n");
@@ -123,10 +125,18 @@ public class ChangeIntentClassifier {
         if (last.getCommitMessage() != null) {
             sb.append(": ").append(truncate(last.getCommitMessage(), 100));
         }
+        if (isDelete) {
+            sb.append(" [操作: 删除了修改1的代码]");
+        }
         sb.append("\n```diff\n");
         sb.append(truncate(last.getDiffSnippet(), 2000));
         sb.append("\n```\n\n");
 
+        if (isDelete) {
+            sb.append("第二次修改直接删除了第一次修改加入的代码。删除原因更可能是：\n");
+            sb.append("- FIX(修复错误): 删除冗余/错误的实现\n");
+            sb.append("- ENHANCE(功能增强): 重构/简化代码\n");
+        }
         sb.append("判断第二次修改是修复第一次修改引入的问题，还是在第一次修改基础上做功能增强？\n");
         sb.append("回复格式: 意图|置信度|理由\n");
         sb.append("意图取值: FIX(修复错误) / ENHANCE(功能增强) / UNCERTAIN(不确定)\n");

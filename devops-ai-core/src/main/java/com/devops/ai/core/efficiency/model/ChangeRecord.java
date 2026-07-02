@@ -7,6 +7,8 @@ import java.util.Date;
  */
 public class ChangeRecord {
 
+    public enum ChangeType { ADD, MODIFY, DELETE }
+
     private String filePath;
     private int lineStart;
     private int lineEnd;
@@ -16,6 +18,7 @@ public class ChangeRecord {
     private String commitMessage;
     private Date timestamp;
     private String diffSnippet;
+    private ChangeType changeType;
 
     public String getFilePath() { return filePath; }
     public void setFilePath(String filePath) { this.filePath = filePath; }
@@ -44,6 +47,11 @@ public class ChangeRecord {
     public String getDiffSnippet() { return diffSnippet; }
     public void setDiffSnippet(String diffSnippet) { this.diffSnippet = diffSnippet; }
 
+    public ChangeType getChangeType() { return changeType; }
+    public void setChangeType(ChangeType changeType) { this.changeType = changeType; }
+
+    public boolean isDelete() { return changeType == ChangeType.DELETE; }
+
     public boolean overlaps(ChangeRecord other) {
         if (!this.filePath.equals(other.filePath)) return false;
         return this.lineStart <= other.lineEnd && other.lineStart <= this.lineEnd;
@@ -56,6 +64,7 @@ public class ChangeRecord {
                 ", lines=[" + lineStart + "-" + lineEnd + ']' +
                 ", author='" + authorName + '\'' +
                 ", commit='" + commitId + '\'' +
+                ", changeType=" + changeType +
                 '}';
     }
 }

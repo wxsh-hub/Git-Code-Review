@@ -91,9 +91,10 @@ public class EfficiencyReportGenerator {
         // Count by intent
         long fixCount = changes.stream().filter(RepeatedChange::isFix).count();
         long enhanceCount = changes.stream().filter(RepeatedChange::isEnhance).count();
+        long deleteCount = changes.stream().filter(rc -> rc.getLastChange() != null && rc.getLastChange().isDelete()).count();
         long uncertainCount = changes.size() - fixCount - enhanceCount;
-        sb.append(String.format("*共 %d 处重复修改*: %d 修复 / %d 增强 / %d 不确定\n\n",
-                changes.size(), fixCount, enhanceCount, uncertainCount));
+        sb.append(String.format("*共 %d 处重复修改*: %d 修复 / %d 增强 / %d 删除 / %d 不确定\n\n",
+                changes.size(), fixCount, enhanceCount, deleteCount, uncertainCount));
 
         // Group by file
         Map<String, List<RepeatedChange>> byFile = changes.stream()
@@ -119,7 +120,8 @@ public class EfficiencyReportGenerator {
                     if (first.getCommitMessage() != null) {
                         sb.append(" - *").append(truncate(first.getCommitMessage(), 80)).append("*");
                     }
-                    sb.append("\n- 再次: **").append(last.getAuthorName()).append("**")
+                    String lastAction = last.isDelete() ? " **删除**" : " 修改";
+                    sb.append("\n- 再次").append(lastAction).append(": **").append(last.getAuthorName()).append("**")
                             .append(" (").append(last.getCommitId().substring(0, Math.min(8, last.getCommitId().length()))).append(")")
                             .append(" - ").append(formatDate(last.getTimestamp()));
                     if (last.getCommitMessage() != null) {
