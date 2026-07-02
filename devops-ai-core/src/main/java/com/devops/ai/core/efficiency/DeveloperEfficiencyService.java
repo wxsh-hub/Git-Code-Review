@@ -201,6 +201,9 @@ public class DeveloperEfficiencyService {
 
             log.info("  Fix {} has {} diffs", fixHash.substring(0, Math.min(8, fixHash.length())), diffs.size());
 
+            // Cross-file dedup map: key = bug-introducing commitId, merges blame results across files
+            Map<String, CrossFileBlameInfo> crossFileMap = new LinkedHashMap<>();
+
             for (DiffEntry diff : diffs) {
                 // Skip deleted/renamed/binary files
                 if (diff.getChangeType() == DiffEntry.ChangeType.DELETE) continue;
@@ -248,10 +251,9 @@ public class DeveloperEfficiencyService {
                 int totalLines = blame.getResultContents().size();
                 log.info("  Blame {}: {} lines, {} hunk ranges", filePath, totalLines, oldLineRanges.size());
 
-                // Collect blame results for each changed line
+                // Collect blame results for each changed line (per-file)
                 // Map: blameAuthor -> {commitId, lineCount}
                 Map<String, BlameLineInfo> authorMap = new LinkedHashMap<>();
-                int selfFixLines = 0;
                 int otherFixLines = 0;
                 int outOfRange = 0;
                 for (int[] range : oldLineRanges) {
@@ -274,7 +276,8 @@ public class DeveloperEfficiencyService {
                                     authorMap.computeIfAbsent(blameAuthor,
                                             k -> new BlameLineInfo(blameCommitId,
                                                     sourceCommit.getShortMessage(),
-                                                    sourceAuthor.getName()))
+                                                    sourceAuthor.getName(),
+                                                    sourceAuthor.getWhen()))
                                             .incrementLine();
                                 }
                             }
@@ -285,30 +288,41 @@ public class DeveloperEfficiencyService {
                 }
 
                 if (!authorMap.isEmpty()) {
-                    log.info("Blame found {} different author(s) for fix {} -> {} (self-fix: {} lines, other-fix: {} lines, oob: {})",
+                    log.info("Blame found {} different author(s) for fix {} -> {} (other-fix: {} lines, oob: {})",
                             authorMap.size(),
                             fixHash.substring(0, Math.min(8, fixHash.length())),
                             filePath,
-                            selfFixLines, otherFixLines, outOfRange);
-                } else if (otherFixLines == 0 && (selfFixLines > 0 || outOfRange > 0)) {
-                    log.info("Blame for fix {} -> {}: all {} changed lines belong to fix author (self-fix={}, oob={})",
-                            fixHash.substring(0, Math.min(8, fixHash.length())),
-                            filePath,
-                            selfFixLines + otherFixLines + outOfRange,
-                            selfFixLines, outOfRange);
+                            otherFixLines, outOfRange);
                 }
 
-                // Create BugDetail for each unique blame author in this file
-                if (!authorMap.isEmpty()) {
-                    double sharePerAuthor = 1.0 / authorMap.size();
-                    for (BlameLineInfo info : authorMap.values()) {
+                // Merge into cross-file blame map (keyed by "commitId|authorName")
+                // so the same commit by different authors is tracked separately for fair share splitting
+                for (BlameLineInfo info : authorMap.values()) {
+                    String dateStr = info.createdAt != null ? formatDate(info.createdAt) : "";
+                    String crossKey = info.commitId + "|" + info.authorName;
+                    CrossFileBlameInfo cross = crossFileMap.computeIfAbsent(crossKey,
+                            k -> new CrossFileBlameInfo(info.commitId, info.commitMessage, info.authorName, dateStr));
+                    cross.addFile(filePath, info.lineCount);
+                }
+            }
+
+            // Group by commitId to calculate shares:
+            // Each distinct commitId = one bug; if N authors contributed, each gets 1/N share
+            if (!crossFileMap.isEmpty()) {
+                Map<String, List<CrossFileBlameInfo>> byCommit = new LinkedHashMap<>();
+                for (CrossFileBlameInfo cross : crossFileMap.values()) {
+                    byCommit.computeIfAbsent(cross.commitId, k -> new ArrayList<>()).add(cross);
+                }
+                for (List<CrossFileBlameInfo> group : byCommit.values()) {
+                    double sharePerAuthor = 1.0 / group.size();
+                    for (CrossFileBlameInfo cross : group) {
                         DeveloperEfficiency.BugDetail detail = new DeveloperEfficiency.BugDetail();
-                        detail.setCommitId(info.commitId);
-                        detail.setCommitMessage(info.commitMessage);
-                        detail.setIntroducedBy(info.authorName);
-                        detail.setCreatedAt(""); // We don't have the date for the blame commit easily
-                        detail.setFilePath(filePath);
-                        detail.setLineCount(info.lineCount);
+                        detail.setCommitId(cross.commitId);
+                        detail.setCommitMessage(cross.commitMessage);
+                        detail.setIntroducedBy(cross.authorName);
+                        detail.setCreatedAt(cross.createdAt != null ? cross.createdAt : "");
+                        detail.setFilePath(String.join(", ", cross.filePaths));
+                        detail.setLineCount(cross.totalLines);
                         detail.setShare(sharePerAuthor);
                         detail.setFixedBy(fixAuthor);
                         detail.setFixedCommitId(fixHash);
@@ -368,16 +382,45 @@ public class DeveloperEfficiencyService {
         final String commitId;
         final String commitMessage;
         final String authorName;
+        final Date createdAt;
         int lineCount;
 
-        BlameLineInfo(String commitId, String commitMessage, String authorName) {
+        BlameLineInfo(String commitId, String commitMessage, String authorName, Date createdAt) {
             this.commitId = commitId;
             this.commitMessage = commitMessage;
             this.authorName = authorName;
+            this.createdAt = createdAt;
             this.lineCount = 0;
         }
 
         void incrementLine() { lineCount++; }
+    }
+
+    /**
+     * Internal helper to deduplicate blame info across files within a single fix commit.
+     * Multiple files blaming to the same bug-introducing commit are merged into one entry.
+     */
+    private static class CrossFileBlameInfo {
+        final String commitId;
+        final String commitMessage;
+        final String authorName;
+        String createdAt;
+        final List<String> filePaths = new ArrayList<>();
+        int totalLines = 0;
+
+        CrossFileBlameInfo(String commitId, String commitMessage, String authorName, String createdAt) {
+            this.commitId = commitId;
+            this.commitMessage = commitMessage;
+            this.authorName = authorName;
+            this.createdAt = createdAt;
+        }
+
+        void addFile(String path, int lines) {
+            if (!filePaths.contains(path)) {
+                filePaths.add(path);
+            }
+            totalLines += lines;
+        }
     }
 
     // ==================== Aggregation ====================
@@ -402,7 +445,13 @@ public class DeveloperEfficiencyService {
             dev.setTotalCommits(dev.getTotalCommits() + 1);
         }
 
-        // Phase 2: Count bugs introduced (from blame) and attach detail
+        // Phase 2: Count bugs introduced (from blame) and attach detail.
+        // BugDetails are NOT deduplicated across fix commits — the same bug-introducing
+        // commit fixed by different fix commits counts as multiple bugs.
+        // FixDetails ARE deduplicated by fixCommitId: one fix commit = one fix action,
+        // even if it fixes multiple bug-introducing commits.
+        Map<String, DeveloperEfficiency.FixDetail> fixDedupMap = new LinkedHashMap<>();
+
         for (DeveloperEfficiency.BugDetail bug : allBugDetails) {
             // Bug introducer - use the blame author name from the BugDetail
             String introducerName = bug.getIntroducedBy() != null ? bug.getIntroducedBy() : "未知";
@@ -415,25 +464,49 @@ public class DeveloperEfficiencyService {
             dev.setBugsIntroduced(dev.getBugsIntroduced() + bug.getShare());
             dev.getBugDetails().add(bug);
 
-            // Fix for fixer
+            // Fix for fixer — deduplicate by fixCommitId only:
+            // one fix commit = one fix action, even if it fixes multiple bug-introducing commits.
             String fixerName = bug.getFixedBy() != null ? bug.getFixedBy() : "未知";
-            DeveloperEfficiency fixerDev = devMap.computeIfAbsent(fixerName, k -> {
-                DeveloperEfficiency d = new DeveloperEfficiency();
-                d.setAuthorName(k);
-                return d;
-            });
+            String fixCommitId = bug.getFixedCommitId();
+            if (fixCommitId == null || fixCommitId.isEmpty()) continue;
 
-            // Create FixDetail for fixer
-            DeveloperEfficiency.FixDetail fixDetail = new DeveloperEfficiency.FixDetail();
-            fixDetail.setCommitId(bug.getFixedCommitId());
-            fixDetail.setCommitMessage(bug.getFixedMessage());
-            fixDetail.setCreatedAt(bug.getFixedAt());
-            fixDetail.setIntroducedBy(introducerName);
-            fixDetail.setIntroducedByCommitId(bug.getCommitId());
-            fixDetail.setIntroducedByMessage(bug.getCommitMessage());
-            fixDetail.setFilePath(bug.getFilePath());
-            fixerDev.getFixDetails().add(fixDetail);
-            fixerDev.setFixesMade(fixerDev.getFixesMade() + 1);
+            DeveloperEfficiency.FixDetail existingFix = fixDedupMap.get(fixCommitId);
+            if (existingFix == null) {
+                DeveloperEfficiency.FixDetail fixDetail = new DeveloperEfficiency.FixDetail();
+                fixDetail.setCommitId(fixCommitId);
+                fixDetail.setCommitMessage(bug.getFixedMessage());
+                fixDetail.setCreatedAt(bug.getFixedAt());
+                fixDetail.setIntroducedBy(introducerName);
+                fixDetail.setIntroducedByCommitId(bug.getCommitId());
+                fixDetail.setIntroducedByMessage(bug.getCommitMessage());
+                fixDetail.setFilePath(bug.getFilePath());
+                fixDedupMap.put(fixCommitId, fixDetail);
+
+                DeveloperEfficiency fixerDev = devMap.computeIfAbsent(fixerName, k -> {
+                    DeveloperEfficiency d = new DeveloperEfficiency();
+                    d.setAuthorName(k);
+                    return d;
+                });
+                fixerDev.getFixDetails().add(fixDetail);
+                fixerDev.setFixesMade(fixerDev.getFixesMade() + 1);
+            } else {
+                // Same fix commit, different bug-introducing commit — merge introducedBy info,
+                // avoiding duplicate names/commitIds in the semicolon-separated lists
+                if (!containsPart(existingFix.getIntroducedBy(), introducerName)) {
+                    existingFix.setIntroducedBy(existingFix.getIntroducedBy() + "; " + introducerName);
+                }
+                if (!containsPart(existingFix.getIntroducedByCommitId(), bug.getCommitId())) {
+                    existingFix.setIntroducedByCommitId(existingFix.getIntroducedByCommitId() + "; " + bug.getCommitId());
+                }
+                if (!containsPart(existingFix.getIntroducedByMessage(), bug.getCommitMessage())) {
+                    existingFix.setIntroducedByMessage(existingFix.getIntroducedByMessage() + "; " + bug.getCommitMessage());
+                }
+                // Append file paths
+                String existingPath = existingFix.getFilePath();
+                if (existingPath != null && !existingPath.contains(bug.getFilePath())) {
+                    existingFix.setFilePath(existingPath + ", " + bug.getFilePath());
+                }
+            }
         }
 
         // Phase 3: Calculate bug rate
@@ -541,6 +614,17 @@ public class DeveloperEfficiencyService {
         if (msg == null) return "";
         String trimmed = msg.replace('\n', ' ').trim();
         return trimmed.length() > 80 ? trimmed.substring(0, 80) + "..." : trimmed;
+    }
+
+    /**
+     * Check if a value already exists in a semicolon-separated list.
+     */
+    private boolean containsPart(String list, String value) {
+        if (list == null || value == null) return false;
+        for (String part : list.split("; ")) {
+            if (part.trim().equals(value.trim())) return true;
+        }
+        return false;
     }
 
     // ==================== SSL Bypass ====================

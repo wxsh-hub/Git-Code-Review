@@ -79,18 +79,18 @@ public class EfficiencyReportGenerator {
             // Bug introduction table
             if (!bugDetails.isEmpty()) {
                 sb.append("##### 引入的 Bug\n\n");
-                sb.append("| # | 问题提交 | 时间 | 描述 | 文件 | 份额 | 修复人 | 修复提交 |\n");
-                sb.append("|---|---------|------|------|------|------|--------|--------|\n");
+                sb.append("| # | 问题提交 | 时间 | 引入描述 | 修复描述 | 文件 | 份额 | 修复人 | 修复提交 |\n");
+                sb.append("|---|---------|------|---------|---------|------|------|--------|--------|\n");
                 int idx = 1;
                 for (DeveloperEfficiency.BugDetail bug : bugDetails) {
                     String commitShort = bug.getCommitId() != null && bug.getCommitId().length() >= 8
                             ? bug.getCommitId().substring(0, 8) : (bug.getCommitId() != null ? bug.getCommitId() : "-");
-                    String fixCommitShort = bug.getFixedCommitId() != null && bug.getFixedCommitId().length() >= 8
-                            ? bug.getFixedCommitId().substring(0, 8) : (bug.getFixedCommitId() != null ? bug.getFixedCommitId() : "-");
+                    String fixCommitShort = formatMultiCommitIds(bug.getFixedCommitId());
                     sb.append("| ").append(idx++).append(" | ")
                             .append(commitShort).append(" | ")
-                            .append(bug.getCreatedAt() != null ? bug.getCreatedAt() : "-").append(" | ")
-                            .append(truncate(bug.getCommitMessage(), 50)).append(" | ")
+                            .append(bug.getCreatedAt() != null && !bug.getCreatedAt().isEmpty() ? bug.getCreatedAt() : "-").append(" | ")
+                            .append(truncate(bug.getCommitMessage(), 40)).append(" | ")
+                            .append(truncate(bug.getFixedMessage(), 50)).append(" | ")
                             .append(truncateFilePath(bug.getFilePath(), 40)).append(" | ")
                             .append(String.format("%.2f", bug.getShare())).append(" | ")
                             .append(bug.getFixedBy() != null ? bug.getFixedBy() : "-").append(" | ")
@@ -108,11 +108,10 @@ public class EfficiencyReportGenerator {
                 for (DeveloperEfficiency.FixDetail fix : fixDetails) {
                     String commitShort = fix.getCommitId() != null && fix.getCommitId().length() >= 8
                             ? fix.getCommitId().substring(0, 8) : (fix.getCommitId() != null ? fix.getCommitId() : "-");
-                    String introCommitShort = fix.getIntroducedByCommitId() != null && fix.getIntroducedByCommitId().length() >= 8
-                            ? fix.getIntroducedByCommitId().substring(0, 8) : (fix.getIntroducedByCommitId() != null ? fix.getIntroducedByCommitId() : "-");
+                    String introCommitShort = formatMultiCommitIds(fix.getIntroducedByCommitId());
                     sb.append("| ").append(idx++).append(" | ")
                             .append(commitShort).append(" | ")
-                            .append(fix.getCreatedAt() != null ? fix.getCreatedAt() : "-").append(" | ")
+                            .append(fix.getCreatedAt() != null && !fix.getCreatedAt().isEmpty() ? fix.getCreatedAt() : "-").append(" | ")
                             .append(truncate(fix.getCommitMessage(), 50)).append(" | ")
                             .append(fix.getIntroducedBy() != null ? fix.getIntroducedBy() : "-").append(" | ")
                             .append(introCommitShort).append(" |\n");
@@ -248,5 +247,24 @@ public class EfficiencyReportGenerator {
         if (path.length() <= maxLen) return path;
         // Show the last part of the file path
         return "..." + path.substring(path.length() - maxLen + 3);
+    }
+
+    /**
+     * Format possibly multi-valued commit IDs (separated by "; ") to short 8-char hashes.
+     */
+    private String formatMultiCommitIds(String commitIds) {
+        if (commitIds == null || commitIds.isEmpty()) return "-";
+        String[] parts = commitIds.split("; ");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) sb.append("; ");
+            String cid = parts[i].trim();
+            if (cid.length() >= 8) {
+                sb.append(cid, 0, 8);
+            } else {
+                sb.append(cid);
+            }
+        }
+        return sb.toString();
     }
 }

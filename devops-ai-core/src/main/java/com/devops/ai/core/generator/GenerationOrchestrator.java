@@ -114,6 +114,13 @@ public class GenerationOrchestrator {
                 logEntry.setStatus(result.isSuccess() ? "completed" : "failed");
                 logEntry.setCompletedAt(new Date());
                 if (result.isSuccess() && result.getContent() != null) {
+                    // Merge review content into main content if present
+                    if ((request.isUseCodeReview() || request.isUseEfficiencyAnalysis()) && result.getReviewContent() != null) {
+                        String merged = result.getContent() + "\n\n---\n\n" + result.getReviewContent();
+                        result.setContent(merged);
+                        logEntry.setHasReview(true);
+                    }
+
                     String extension = "html".equals(result.getFormat()) ? "html" : "md";
                     java.io.File outputDir = new java.io.File("output");
                     if (!outputDir.exists()) {
@@ -124,15 +131,6 @@ public class GenerationOrchestrator {
                     String outputUrl = "/output/" + taskId + "." + extension;
                     logEntry.setOutputPath(outputUrl);
                     log.info("Document saved to: {} (URL: {})", outputFile.getAbsolutePath(), outputUrl);
-
-                    if ((request.isUseCodeReview() || request.isUseEfficiencyAnalysis()) && result.getReviewContent() != null) {
-                        String reviewExtension = "html".equals(request.getReviewFormat()) ? "html" : "md";
-                        java.io.File reviewFile = new java.io.File(outputDir, taskId + "_review." + reviewExtension);
-                        java.nio.file.Files.write(reviewFile.toPath(), result.getReviewContent().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                        String reviewUrl = "/output/" + taskId + "_review." + reviewExtension;
-                        logEntry.setReviewOutputPath(reviewUrl);
-                        log.info("Review document saved to: {} (URL: {})", reviewFile.getAbsolutePath(), reviewUrl);
-                    }
                 }
                 if (!result.isSuccess()) {
                     logEntry.setErrorMessage(result.getErrorMessage());
