@@ -8,6 +8,7 @@ import com.devops.ai.core.gitlab.GitLabService;
 import com.devops.ai.core.incremental.IncrementalManager;
 import com.devops.ai.core.model.Category;
 import com.devops.ai.core.model.Commit;
+import com.devops.ai.core.model.ContributorStats;
 import com.devops.ai.core.model.GitLabCommitQuery;
 import com.devops.ai.core.review.ai.CodeReviewAiService;
 import com.devops.ai.core.review.collector.CodeReviewDataCollector;
@@ -273,11 +274,24 @@ public class GenerationOrchestrator {
         request.setTotalCommits(totalCommits);
         request.setTotalAuthors(authors.size());
 
+        // Compute per-contributor stats for the contributor analysis section
+        List<ContributorStats> contributorStats = computeContributorStats(categories, totalCommits);
+        request.setContributorStats(contributorStats);
+
         if ("detailed".equals(request.getTemplateName()) && request.isUseAiClassifier() && aiClassifier.isAvailable()) {
             String report = aiClassifier.generateAnalysisReport(categories, request.getProjectName());
             if (report != null && !report.isEmpty()) {
                 request.setAnalysisReport(report);
                 log.info("AI analysis report generated for detailed template");
+            }
+
+            // Optional AI contributor analysis report
+            if (!contributorStats.isEmpty()) {
+                String contributorReport = aiClassifier.generateContributorAnalysisReport(contributorStats, request.getProjectName());
+                if (contributorReport != null && !contributorReport.isEmpty()) {
+                    request.setContributorAnalysisReport(contributorReport);
+                    log.info("AI contributor analysis report generated for detailed template");
+                }
             }
         }
 
@@ -491,6 +505,93 @@ public class GenerationOrchestrator {
         }
 
         return results;
+    }
+
+    private List<ContributorStats> computeContributorStats(List<Category> categories, int totalCommits) {
+        if (totalCommits == 0) return Collections.emptyList();
+
+        // 1. Group by author -> category -> commits
+        Map<String, Map<String, List<Commit>>> authorCategoryMap = new LinkedHashMap<>();
+        Map<String, String> authorEmails = new LinkedHashMap<>();
+        for (Category cat : categories) {
+            if (cat.getCommits() == null) continue;
+            for (Commit c : cat.getCommits()) {
+                String name = c.getAuthorName() != null ? c.getAuthorName() : "未知";
+                authorCategoryMap.computeIfAbsent(name, k -> new LinkedHashMap<>())
+                        .computeIfAbsent(cat.getName(), k -> new ArrayList<>())
+                        .add(c);
+                if (c.getAuthorEmail() != null) {
+                    authorEmails.putIfAbsent(name, c.getAuthorEmail());
+                }
+            }
+        }
+
+        // 2. Build ContributorStats for each author
+        List<ContributorStats> result = new ArrayList<>();
+        for (Map.Entry<String, Map<String, List<Commit>>> entry : authorCategoryMap.entrySet()) {
+            String authorName = entry.getKey();
+            Map<String, List<Commit>> catMap = entry.getValue();
+
+            int count = catMap.values().stream().mapToInt(List::size).sum();
+            double pct = (double) count / totalCommits * 100.0;
+
+            // Category distribution
+            Map<String, Integer> catDist = new LinkedHashMap<>();
+            for (Map.Entry<String, List<Commit>> ce : catMap.entrySet()) {
+                catDist.put(ce.getKey(), ce.getValue().size());
+            }
+
+            // Commit frequency timeline by date
+            Map<String, Integer> frequency = new LinkedHashMap<>();
+            for (List<Commit> commits : catMap.values()) {
+                for (Commit c : commits) {
+                    if (c.getCreatedAt() != null) {
+                        String day = new SimpleDateFormat("yyyy-MM-dd").format(c.getCreatedAt());
+                        frequency.merge(day, 1, Integer::sum);
+                    }
+                }
+            }
+            // Sort by date ascending
+            Map<String, Integer> sortedFrequency = new LinkedHashMap<>();
+            frequency.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEachOrdered(e -> sortedFrequency.put(e.getKey(), e.getValue()));
+
+            ContributorStats stats = new ContributorStats();
+            stats.setAuthorName(authorName);
+            stats.setAuthorEmail(authorEmails.get(authorName));
+            stats.setCommitCount(count);
+            stats.setPercentage(Math.round(pct * 100.0) / 100.0);
+            stats.setCategoryDistribution(catDist);
+            stats.setCommitFrequency(sortedFrequency);
+
+            // Low-frequency flag and commit details
+            boolean lowFreq = pct < 10.0;
+            stats.setLowFrequency(lowFreq);
+            if (lowFreq) {
+                List<ContributorStats.CommitDetail> details = new ArrayList<>();
+                for (Map.Entry<String, List<Commit>> ce : catMap.entrySet()) {
+                    String catName = ce.getKey();
+                    for (Commit c : ce.getValue()) {
+                        ContributorStats.CommitDetail cd = new ContributorStats.CommitDetail();
+                        cd.setCommitId(c.getId() != null && c.getId().length() >= 8
+                                ? c.getId().substring(0, 8) : (c.getId() != null ? c.getId() : ""));
+                        cd.setMessage(c.getMessage());
+                        cd.setCategory(catName);
+                        cd.setDate(c.getCreatedAt() != null
+                                ? new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(c.getCreatedAt()) : "");
+                        details.add(cd);
+                    }
+                }
+                stats.setCommitDetails(details);
+            }
+
+            result.add(stats);
+        }
+
+        // Sort descending by commit count
+        result.sort((a, b) -> Integer.compare(b.getCommitCount(), a.getCommitCount()));
+        return result;
     }
 
     /** 将空字符串转为 null，处理 Web 表单提交的空白字段 */

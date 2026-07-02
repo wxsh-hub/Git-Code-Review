@@ -25,6 +25,8 @@ public class DocumentRequest {
     private int totalCommits;
     private int totalAuthors;
     private String analysisReport;
+    private List<com.devops.ai.core.model.ContributorStats> contributorStats;
+    private String contributorAnalysisReport;
 
     public String getProjectId() {
         return projectId;
@@ -192,5 +194,21 @@ public class DocumentRequest {
 
     public void setAnalysisReport(String analysisReport) {
         this.analysisReport = analysisReport;
+    }
+
+    public List<com.devops.ai.core.model.ContributorStats> getContributorStats() {
+        return contributorStats;
+    }
+
+    public void setContributorStats(List<com.devops.ai.core.model.ContributorStats> contributorStats) {
+        this.contributorStats = contributorStats;
+    }
+
+    public String getContributorAnalysisReport() {
+        return contributorAnalysisReport;
+    }
+
+    public void setContributorAnalysisReport(String contributorAnalysisReport) {
+        this.contributorAnalysisReport = contributorAnalysisReport;
     }
 }

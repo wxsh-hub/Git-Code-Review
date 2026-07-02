@@ -51,6 +51,9 @@ public class HtmlGenerator implements DocumentFormatGenerator {
         html.append("h3 { color: #2980b9; margin-top: 20px; }\n");
         html.append("ul { padding-left: 20px; }\n");
         html.append("li { margin: 5px 0; }\n");
+        html.append("table { border-collapse: collapse; width: 100%; margin: 10px 0; }\n");
+        html.append("th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }\n");
+        html.append("th { background-color: #f2f2f2; }\n");
         html.append("</style>\n");
         html.append("</head>\n");
         html.append("<body>\n");

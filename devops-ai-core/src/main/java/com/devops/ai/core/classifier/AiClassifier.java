@@ -1,6 +1,7 @@
 package com.devops.ai.core.classifier;
 
 import com.devops.ai.core.llm.LlmClient;
+import com.devops.ai.core.model.ContributorStats;
 import com.devops.ai.infrastructure.entity.AiConfig;
 import com.devops.ai.infrastructure.exception.AiServiceException;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
@@ -349,6 +350,37 @@ public class AiClassifier implements ClassifierStrategy {
             return response != null ? response.trim() : "";
         } catch (Exception e) {
             log.warn("AI analysis report generation failed: {}", e.getMessage());
+            return "";
+        }
+    }
+
+    public String generateContributorAnalysisReport(java.util.List<ContributorStats> statsList, String projectName) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (ContributorStats s : statsList) {
+                sb.append("- ").append(s.getAuthorName())
+                        .append(": ").append(s.getCommitCount()).append(" 次提交 (")
+                        .append(String.format("%.1f", s.getPercentage())).append("%)\n");
+                sb.append("  分类分布: ");
+                for (java.util.Map.Entry<String, Integer> e : s.getCategoryDistribution().entrySet()) {
+                    sb.append(e.getKey()).append("(").append(e.getValue()).append(") ");
+                }
+                sb.append("\n\n");
+            }
+
+            String prompt = "你是一名软件工程团队分析专家。请基于以下项目贡献者数据，为每位开发者生成一段简洁的个人贡献评语。\n\n"
+                    + "项目名称：" + projectName + "\n\n"
+                    + "贡献者统计：\n" + sb.toString() + "\n\n"
+                    + "要求：\n"
+                    + "1. 为每位开发者生成 2-3 句评语，概述其贡献重点、主要工作领域和技术特点\n"
+                    + "2. 特别关注低频（<10%）贡献者的贡献价值，不要忽略他们\n"
+                    + "3. 整体语气专业、积极、建设性\n"
+                    + "4. 按贡献者排序输出，每位贡献者以 #### 姓名 开头\n";
+
+            String response = callLlmApi(prompt, 3000);
+            return response != null ? response.trim() : "";
+        } catch (Exception e) {
+            log.warn("Contributor AI analysis report generation failed: {}", e.getMessage());
             return "";
         }
     }
