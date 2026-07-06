@@ -13,6 +13,9 @@ public class DocumentResult {
     private String reviewContent;
     private String reviewOutputPath;
 
+    /** Phase 8: 效率分析内容，独立于审查报告，用于四页结构组装 */
+    private String efficiencyContent;
+
     public DocumentResult() {
     }
 
@@ -92,5 +95,13 @@ public class DocumentResult {
 
     public void setReviewOutputPath(String reviewOutputPath) {
         this.reviewOutputPath = reviewOutputPath;
+    }
+
+    public String getEfficiencyContent() {
+        return efficiencyContent;
+    }
+
+    public void setEfficiencyContent(String efficiencyContent) {
+        this.efficiencyContent = efficiencyContent;
     }
 }

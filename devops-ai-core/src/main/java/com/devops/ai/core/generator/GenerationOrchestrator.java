@@ -118,12 +118,40 @@ public class GenerationOrchestrator {
                 logEntry.setStatus(result.isSuccess() ? "completed" : "failed");
                 logEntry.setCompletedAt(new Date());
                 if (result.isSuccess() && result.getContent() != null) {
-                    // Merge review content into main content if present
-                    if ((request.isUseCodeReview() || request.isUseEfficiencyAnalysis()) && result.getReviewContent() != null) {
-                        String merged = result.getContent() + "\n\n---\n\n" + result.getReviewContent();
-                        result.setContent(merged);
-                        logEntry.setHasReview(true);
+                    // Phase 8: 四页报告结构组装
+                    // 第一~三页: 管理摘要 → 问题处置页 → 模块与趋势页（来自审查报告）
+                    // 第四页: 效率与贡献附录（贡献者统计 + 效率分析）
+                    boolean hasReview = request.isUseCodeReview() && result.getReviewContent() != null;
+                    boolean hasEfficiency = request.isUseEfficiencyAnalysis() && result.getEfficiencyContent() != null;
+
+                    StringBuilder merged = new StringBuilder();
+
+                    if (hasReview) {
+                        merged.append(result.getReviewContent());
                     }
+
+                    if (hasEfficiency || hasReview) {
+                        if (merged.length() > 0) {
+                            merged.append("\n---\n\n");
+                        }
+                        merged.append("# 效率与贡献附录\n\n");
+
+                        // 贡献者分析（来自基础报告）
+                        merged.append(result.getContent());
+
+                        // 效率分析内容
+                        if (hasEfficiency) {
+                            merged.append("\n").append(result.getEfficiencyContent());
+                        }
+
+                        merged.append("\n\n> **注意**：\n");
+                        merged.append("> - git blame 关联仅表示修复涉及的历史代码行由对应开发者编写，不一定意味着该开发者直接引入了 bug。\n");
+                        merged.append("> - 低贡献率仅反映本次统计范围内的提交数量，不代表开发者在其他方面的投入。\n");
+                        merged.append("> - 以上数据为本次分析范围的统计结果，仅供团队内部参考。\n");
+                    }
+
+                    result.setContent(merged.toString());
+                    logEntry.setHasReview(hasReview);
 
                     String extension = "html".equals(result.getFormat()) ? "html" : "md";
                     java.io.File outputDir = new java.io.File("output");
@@ -456,13 +484,8 @@ public class GenerationOrchestrator {
                         String efficiencySection = developerEfficiencyService.analyzeAndGenerateReport(
                                 commits, request.getCategories(), findings, projectConfig, reviewSinceHash, reviewUntilHash);
                         if (efficiencySection != null && !efficiencySection.isEmpty()) {
-                            String reviewContent = result.getReviewContent();
-                            if (reviewContent != null && !reviewContent.isEmpty()) {
-                                result.setReviewContent(reviewContent + "\n\n---\n\n" + efficiencySection);
-                            } else {
-                                result.setReviewContent("# 开发者效率分析报告\n\n" + efficiencySection);
-                            }
-                            log.info("Efficiency analysis appended to review report");
+                            result.setEfficiencyContent(efficiencySection);
+                            log.info("Efficiency analysis completed");
                         }
                     } else {
                         log.warn("Efficiency analysis skipped: cannot determine commit hash range");

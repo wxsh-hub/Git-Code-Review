@@ -30,7 +30,7 @@ public class MarkdownGenerator implements DocumentFormatGenerator {
         if (request.getProjectVersion() != null && !request.getProjectVersion().isEmpty()) {
             content.append(" - ").append(request.getProjectVersion());
         }
-        content.append(" 更新日志\n\n");
+        content.append(" 项目报告\n\n");
 
         content.append("## ").append(formatDateRange(request)).append("\n\n");
 
@@ -43,19 +43,6 @@ public class MarkdownGenerator implements DocumentFormatGenerator {
             content.append("- 参与开发者: ").append(request.getTotalAuthors()).append(" 人\n");
         }
         content.append("\n");
-
-        if (request.getCategories() != null) {
-            for (Category category : request.getCategories()) {
-                if (category.getCommits() != null && !category.getCommits().isEmpty()) {
-                    content.append("### ").append(category.getName()).append("\n\n");
-                    for (Commit commit : category.getCommits()) {
-                        String authorInfo = commit.getAuthorName() != null ? "（作者：" + commit.getAuthorName() + "）" : "";
-                        content.append("- ").append(commit.getMessage()).append(authorInfo).append("\n");
-                    }
-                    content.append("\n");
-                }
-            }
-        }
 
         // Contributor Panoramic Analysis section
         if (request.getContributorStats() != null && !request.getContributorStats().isEmpty()) {
@@ -130,16 +117,6 @@ public class MarkdownGenerator implements DocumentFormatGenerator {
 
                 content.append("\n");
             }
-        }
-
-        // Optional AI Contributor Analysis Report
-        if (request.getContributorAnalysisReport() != null && !request.getContributorAnalysisReport().isEmpty()) {
-            content.append("\n---\n\n## 贡献者智能分析报告\n\n")
-                    .append(request.getContributorAnalysisReport()).append("\n");
-        }
-
-        if (request.getAnalysisReport() != null && !request.getAnalysisReport().isEmpty()) {
-            content.append("\n---\n\n## 更新日志分析报告\n\n").append(request.getAnalysisReport()).append("\n");
         }
 
         DocumentResult result = new DocumentResult(content.toString(), "markdown");
