@@ -111,6 +111,14 @@ public class ReviewReportGenerator {
         sb.append("| 版本 | ").append(nvl(context.getProjectVersion())).append(" |\n");
         sb.append("| 分支 | ").append(nvl(context.getBranch())).append(" |\n");
         sb.append("| 审查时间 | ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append(" |\n");
+        if (context.getCommits() != null) {
+            // 提取开发者名单
+            Set<String> authors = new LinkedHashSet<>();
+            for (com.devops.ai.core.model.Commit c : context.getCommits()) {
+                if (c.getAuthorName() != null) authors.add(c.getAuthorName());
+            }
+            sb.append("| 参与开发者 | ").append(String.join("、", authors)).append("（").append(authors.size()).append(" 人） |\n");
+        }
         sb.append("\n");
 
         // 3) 风险等级

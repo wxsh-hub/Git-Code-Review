@@ -26,24 +26,6 @@ public class MarkdownGenerator implements DocumentFormatGenerator {
     public DocumentResult generate(DocumentRequest request) {
         StringBuilder content = new StringBuilder();
 
-        content.append("# ").append(request.getProjectName());
-        if (request.getProjectVersion() != null && !request.getProjectVersion().isEmpty()) {
-            content.append(" - ").append(request.getProjectVersion());
-        }
-        content.append(" 项目报告\n\n");
-
-        content.append("## ").append(formatDateRange(request)).append("\n\n");
-
-        content.append("### 构建信息\n");
-        content.append("- 项目名称: ").append(request.getProjectName()).append("\n");
-        content.append("- 构建分支: ").append(request.getBranch()).append("\n");
-        content.append("- 构建时间: ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append("\n");
-        content.append("- 提交总数: ").append(request.getTotalCommits()).append("\n");
-        if (request.getTotalAuthors() > 0) {
-            content.append("- 参与开发者: ").append(request.getTotalAuthors()).append(" 人\n");
-        }
-        content.append("\n");
-
         // Contributor Panoramic Analysis section
         if (request.getContributorStats() != null && !request.getContributorStats().isEmpty()) {
             content.append("\n---\n\n## 贡献者分析\n\n");
@@ -122,18 +104,6 @@ public class MarkdownGenerator implements DocumentFormatGenerator {
         DocumentResult result = new DocumentResult(content.toString(), "markdown");
         result.setCommitCount(request.getTotalCommits());
         return result;
-    }
-
-    private String formatDateRange(DocumentRequest request) {
-        String since = request.getSince();
-        String until = request.getUntil();
-        if (since != null && until != null) {
-            return formatDateTime(since) + " - " + formatDateTime(until);
-        }
-        if (since != null) {
-            return formatDateTime(since) + " - 至今";
-        }
-        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
     }
 
     private String formatDateTime(String value) {
