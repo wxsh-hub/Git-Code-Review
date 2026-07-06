@@ -110,21 +110,34 @@ public class CodeReviewAiService {
         // Step 1: 文件预筛选
         List<FileDiff> filtered = preFilter(diffs);
 
-        // Step 2: 按业务链路分组
-        Map<String, ReviewGroup> groups = groupByBusinessLink(filtered, context);
+        // 模块计数（for buildResultFromFindings）
+        Set<String> moduleSet = new LinkedHashSet<>();
 
-        // Step 3: 逐组调用 OCR MCP → 转换为 Finding
+        // Step 2+3: 调用 OCR MCP → 转换为 Finding
         List<Finding> allFindings = new ArrayList<>();
 
-        for (ReviewGroup group : groups.values()) {
-            try {
-                List<Finding> groupFindings = reviewGroup(group, context);
-                allFindings.addAll(groupFindings);
-                log.info("Group '{}' reviewed: {} findings from {} files",
-                        group.name, groupFindings.size(), group.files.size());
-            } catch (Exception e) {
-                log.error("Group '{}' review failed: {}", group.name, e.getMessage());
-                // 一组失败不中断其他组
+        if (context.getSinceHash() != null && context.getUntilHash() != null) {
+            // diff 模式：全量文件一次调用。OCR 的 code_review_diff 只审查变更行，
+            // 分组没有任何收益，反而 138 个文件拆成 45 组造成 45 次 OCR 子进程调用
+            List<Finding> findings = reviewAll(filtered, context);
+            for (Finding f : findings) {
+                if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
+            }
+            allFindings.addAll(findings);
+            log.info("Diff review complete: {} findings from {} files", findings.size(), filtered.size());
+        } else {
+            // scan 模式（无 hash 范围）：按业务链路分组逐组扫描
+            Map<String, ReviewGroup> groups = groupByBusinessLink(filtered, context);
+            for (ReviewGroup group : groups.values()) {
+                try {
+                    List<Finding> groupFindings = reviewGroup(group, context);
+                    allFindings.addAll(groupFindings);
+                    moduleSet.add(group.name);
+                    log.info("Group '{}' reviewed: {} findings from {} files",
+                            group.name, groupFindings.size(), group.files.size());
+                } catch (Exception e) {
+                    log.error("Group '{}' review failed: {}", group.name, e.getMessage());
+                }
             }
         }
 
@@ -132,7 +145,7 @@ public class CodeReviewAiService {
         allFindings = runPipeline(allFindings, context);
 
         // 构建 CodeReviewResult（兼容旧接口）
-        return buildResultFromFindings(allFindings, groups, context);
+        return buildResultFromFindings(allFindings, moduleSet.size(), context);
     }
 
     // ================================================================
@@ -230,6 +243,52 @@ public class CodeReviewAiService {
     // ================================================================
     // Step 3: 逐组审查
     // ================================================================
+
+    // ================================================================
+    // Step 3: 审查
+    // ================================================================
+
+    /**
+     * diff 模式：全量文件一次调用 OCR MCP。
+     * code_review_diff 只审查变更行，分组无收益，一次传全部文件效率最高。
+     */
+    List<Finding> reviewAll(List<FileDiff> diffs, CodeReviewContext context) throws Exception {
+        Map<String, Object> args = new HashMap<>();
+        args.put("repo_dir", context.getRepoPath() != null ? context.getRepoPath() : "");
+        args.put("background", buildGraphBackground(context));
+        if (getModel() != null && !getModel().isEmpty()) {
+            args.put("model", getModel());
+        }
+
+        String paths = diffs.stream()
+                .map(FileDiff::getFilePath)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(","));
+        args.put("path", paths);
+        args.put("from", context.getSinceHash());
+        args.put("to", context.getUntilHash());
+
+        log.info("Reviewing all {} files via code_review_diff", diffs.size());
+
+        String ocrJson = ocrmcpClient.callTool("code_review_diff", args);
+        OcrReviewResponse ocrResult = MAPPER.readValue(ocrJson, OcrReviewResponse.class);
+
+        List<Finding> findings = new ArrayList<>();
+        List<OcrComment> comments = ocrResult.getComments();
+        if (comments != null) {
+            for (OcrComment cm : comments) {
+                Finding f = Finding.fromOcrComment(cm);
+                // moduleName diff 模式下从文件路径提取
+                String module = ModulePathResolver.resolveModule(cm.getPath());
+                f.setModuleName(module != null ? module : "other");
+                findings.add(f);
+            }
+        }
+
+        log.info("Diff review: {} ocr comments → {} findings",
+                comments != null ? comments.size() : 0, findings.size());
+        return findings;
+    }
 
     /**
      * 对一个业务链路组调用 OCR MCP 审查，产出 Finding 列表。
@@ -343,7 +402,7 @@ public class CodeReviewAiService {
      * Phase 8 ReviewReportGenerator 全面切换到 Finding 渲染后，此方法可移除。</p>
      */
     private CodeReviewResult buildResultFromFindings(List<Finding> findings,
-                                                      Map<String, ReviewGroup> groups,
+                                                      int moduleCount,
                                                       CodeReviewContext context) {
         CodeReviewResult result = new CodeReviewResult();
         result.setFindings(findings);
@@ -361,7 +420,7 @@ public class CodeReviewAiService {
             result.setConclusion(p0 > 0 ? "需修改" : "建议修改");
             result.setRiskLevel(p0 > 0 || p1 >= 3 ? "高" : (p1 > 0 ? "中" : "低"));
             result.setKeyFindings(String.format("发现 %d 个问题（P0=%d, P1=%d, 已确认=%d），涉及 %d 个模块",
-                    findings.size(), p0, p1, confirmed, groups.size()));
+                    findings.size(), p0, p1, confirmed, moduleCount));
         }
 
         result.setChangeSummary(context.getScopeDescription() != null

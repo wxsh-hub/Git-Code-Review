@@ -25,7 +25,14 @@ public class ModulePathResolver {
             "java", "src", "main", "resources", "test",
             "controller", "service", "mapper", "dao", "repository",
             "model", "entity", "domain", "dto", "vo",
-            "config", "util", "utils", "common", "base", "infra"
+            "config", "util", "utils", "common", "base", "infra",
+            // 工程框架/中间件目录
+            "web", "templates", "static", "proto", "rpc", "api",
+            "framework", "starter", "logging", "gateway",
+            "spring", "conf", "enums", "cors", "handler",
+            "pojo", "json", "databind", "serializer",
+            "exception", "interceptor", "filter", "listener",
+            "codegen", "admin"
     ));
 
     private ModulePathResolver() {
