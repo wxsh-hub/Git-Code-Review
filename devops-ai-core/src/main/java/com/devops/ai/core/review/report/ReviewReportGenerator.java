@@ -92,7 +92,6 @@ public class ReviewReportGenerator {
         long p0 = countBySeverity(findings, FindingSeverity.BLOCKER);
         long p1 = countBySeverity(findings, FindingSeverity.HIGH);
         long p2 = countBySeverity(findings, FindingSeverity.MEDIUM);
-        long p3 = countBySeverity(findings, FindingSeverity.LOW);
         long p0Confirmed = countConfirmed(findings, FindingSeverity.BLOCKER);
         long p1Confirmed = countConfirmed(findings, FindingSeverity.HIGH);
 
@@ -112,12 +111,18 @@ public class ReviewReportGenerator {
         sb.append("| 分支 | ").append(nvl(context.getBranch())).append(" |\n");
         sb.append("| 审查时间 | ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append(" |\n");
         if (context.getCommits() != null) {
+            sb.append("| 审查范围 | ").append(context.getCommits().size()).append(" commits |\n");
+        }
+        if (context.getFileDiffs() != null) {
+            sb.append("| 变更文件 | ").append(context.getFileDiffs().size()).append(" files |\n");
+        }
+        if (context.getCommits() != null) {
             // 提取开发者名单
             Set<String> authors = new LinkedHashSet<>();
             for (com.devops.ai.core.model.Commit c : context.getCommits()) {
                 if (c.getAuthorName() != null) authors.add(c.getAuthorName());
             }
-            sb.append("| 参与开发者 | ").append(String.join("、", authors)).append("（").append(authors.size()).append(" 人） |\n");
+            sb.append("| 参与开发者 | ").append(authors.size()).append(" 人 |\n");
         }
         sb.append("\n");
 
@@ -168,38 +173,8 @@ public class ReviewReportGenerator {
             sb.append("✅ **建议发布** — 无阻断/高危问题，可正常上线\n\n");
         }
 
-        // 6) 待处理事项
-        sb.append("### 待处理事项\n\n");
-        sb.append("| 优先级 | 问题 | 文件 | 处理人 | 截止时间 |\n");
-        sb.append("|--------|------|------|--------|----------|\n");
-
-        List<Finding> highPriority = new ArrayList<>();
-        for (Finding f : findings) {
-            FindingSeverity s = f.getSeverity();
-            if (s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH) {
-                highPriority.add(f);
-            }
-        }
-        // P0 first, P1 second
-        highPriority.sort(Comparator.comparingInt(f -> f.getSeverity().ordinal()));
-
-        int limit = Math.min(highPriority.size(), 15);
-        for (int i = 0; i < limit; i++) {
-            Finding f = highPriority.get(i);
-            String icon = f.getSeverity() == FindingSeverity.BLOCKER ? "⛔ P0" : "⚠ P1";
-            String file = f.getFile() != null ? f.getFile() : "-";
-            String desc = f.getEvidence() != null ? truncateLine(f.getEvidence(), 50) : "-";
-            String handler = f.getCandidateHandler() != null && !f.getCandidateHandler().isEmpty()
-                    ? f.getCandidateHandler() : "待指派";
-            String deadline = computeDeadline(f.getSeverity(), context.getReviewDate());
-
-            sb.append("| ").append(icon).append(" | ")
-                    .append(desc).append(" | ")
-                    .append(file).append(" | ")
-                    .append(handler).append(" | ")
-                    .append(deadline).append(" |\n");
-        }
-        sb.append("\n");
+        // 具体问题见下页（第二页：问题处置页）
+        sb.append("> 具体问题及修复建议请见 [问题处置页](#问题处置页)\n\n");
     }
 
     // ================================================================

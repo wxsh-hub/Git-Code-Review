@@ -143,11 +143,6 @@ public class GenerationOrchestrator {
                         if (hasEfficiency) {
                             merged.append("\n").append(result.getEfficiencyContent());
                         }
-
-                        merged.append("\n\n> **注意**：\n");
-                        merged.append("> - git blame 关联仅表示修复涉及的历史代码行由对应开发者编写，不一定意味着该开发者直接引入了 bug。\n");
-                        merged.append("> - 低贡献率仅反映本次统计范围内的提交数量，不代表开发者在其他方面的投入。\n");
-                        merged.append("> - 以上数据为本次分析范围的统计结果，仅供团队内部参考。\n");
                     }
 
                     result.setContent(merged.toString());

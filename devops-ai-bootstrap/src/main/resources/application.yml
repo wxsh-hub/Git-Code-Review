@@ -6,7 +6,7 @@ spring:
     name: devops-ai
 
   datasource:
-    url: jdbc:h2:file:./data/devops-ai;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    url: jdbc:h2:file:../data/devops-ai;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
     driver-class-name: org.h2.Driver
     username: sa
     password:
@@ -65,3 +65,13 @@ devops:
       branch-ttl-minutes: 5
     task:
       max-concurrent: 5
+
+# ================================================================
+# OCR (open-code-review) MCP server integration
+# ================================================================
+ocr:
+  bin:
+    path: "./bin/ocr.exe"  # 相对于 devops-ai 根目录的 ocr 二进制
+  timeout-minutes: 30                        # 审查超时时间
+  model: ""                                  # OCR 使用模型，空则用 llm.modelName
+  fallback-on-error: true                    # OCR 出错时是否回退到旧的 CodeReviewAiService

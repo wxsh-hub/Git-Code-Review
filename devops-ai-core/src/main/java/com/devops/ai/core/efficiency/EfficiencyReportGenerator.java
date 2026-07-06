@@ -36,13 +36,6 @@ public class EfficiencyReportGenerator {
         sb.append("*分析模式*: Bug修复溯源（AI 提交分类 + git blame）\n");
         sb.append("*分析耗时*: ").append(result.getAnalysisTimeMs()).append("ms\n\n");
 
-        // Phase 8: 数据局限性注释
-        sb.append("> **注意**：\n");
-        sb.append("> - git blame 关联仅表示修复涉及的历史代码行由对应开发者编写，不一定意味着该开发者直接引入了 bug。\n");
-        sb.append("> - 低贡献率仅反映本次统计范围内的提交数量，不代表开发者在其他方面的投入（如代码审查、设计讨论、技术文档等）。\n");
-        sb.append("> - 只有经两个 LLM 交叉验证（分类 LLM + review LLM 置信度平均 ≥ 0.7）的条目才标记为\"已确认\"。\n");
-        sb.append("> - 未修复漏洞的引入者信息同样来自 git blame，已通过 review LLM 交叉验证，但最终判定仍需人工复核。\n\n");
-
         List<DeveloperEfficiency> devs = result.getDeveloperEfficiencies();
         if (devs == null || devs.isEmpty()) {
             sb.append("*未检测到 Bug 修复提交，无法生成效率分析*\n\n");
