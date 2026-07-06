@@ -228,7 +228,7 @@ public class ReviewReportGenerator {
                     case BLOCKER: icon = "⛔ P0 阻断"; break;
                     case HIGH: icon = "⚠ P1 高危"; break;
                     case MEDIUM: icon = "🔵 P2 中危"; break;
-                    default: icon = "P" + (s.ordinal() + 1) + " " + s.getLabel();
+                    default: icon = s.getLevel() + " " + s.getLabel();
                 }
                 long count = countBySeverity(sorted, s);
                 sb.append("### ").append(icon).append("（").append(count).append(" 个）\n\n");

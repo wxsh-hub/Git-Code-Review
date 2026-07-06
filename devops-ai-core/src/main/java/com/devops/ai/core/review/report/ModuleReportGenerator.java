@@ -1,6 +1,5 @@
 package com.devops.ai.core.review.report;
 
-import com.devops.ai.core.review.ai.ModulePathResolver;
 import com.devops.ai.core.review.model.Finding;
 import com.devops.ai.core.review.model.FindingCategory;
 import com.devops.ai.core.review.model.FindingSeverity;
@@ -16,17 +15,6 @@ import java.util.stream.Collectors;
  */
 @Component
 public class ModuleReportGenerator {
-
-    /** 风险分权重：P0=10, P1=5, P2=2, P3=1, P4=0 */
-    private static final Map<String, Integer> RISK_WEIGHTS = new LinkedHashMap<>();
-
-    static {
-        RISK_WEIGHTS.put("P0", 10);
-        RISK_WEIGHTS.put("P1", 5);
-        RISK_WEIGHTS.put("P2", 2);
-        RISK_WEIGHTS.put("P3", 1);
-        RISK_WEIGHTS.put("P4", 0);
-    }
 
     /** 分类 → 展示名 */
     private static final Map<FindingCategory, String> CATEGORY_DISPLAY_NAMES = new LinkedHashMap<>();
