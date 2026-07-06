@@ -14,6 +14,7 @@ import com.devops.ai.core.review.ai.CodeReviewAiService;
 import com.devops.ai.core.review.collector.CodeReviewDataCollector;
 import com.devops.ai.core.review.engine.CodeReviewGraphEngine;
 import com.devops.ai.core.review.model.CodeReviewContext;
+import com.devops.ai.core.review.model.ReviewScope;
 import com.devops.ai.core.review.model.CodeReviewGraph;
 import com.devops.ai.core.review.model.CodeReviewResult;
 import com.devops.ai.core.review.model.FileDiff;
@@ -24,6 +25,8 @@ import com.devops.ai.infrastructure.entity.ProjectConfig;
 import com.devops.ai.infrastructure.repository.GenerationLogRepository;
 import com.devops.ai.infrastructure.repository.ProjectConfigRepository;
 import cn.hutool.core.util.StrUtil;
+import org.eclipse.jgit.lib.Repository;
+import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -347,6 +350,56 @@ public class GenerationOrchestrator {
                         reviewContext.setRepoPath(repoPath);  // 传给 OCR MCP server
                         reviewContext.setSinceHash(reviewSinceHash);   // 用于 code_review_diff
                         reviewContext.setUntilHash(reviewUntilHash);   // 用于 code_review_diff
+
+                        // --- Phase 4: ReviewScope 判定 + 上下文初始化 ---
+                        reviewContext.setReviewDate(new Date());
+
+                        // ReviewScope 判定
+                        boolean hasHash = reviewSinceHash != null && reviewUntilHash != null;
+                        int commitCount = commits != null ? commits.size() : 0;
+                        reviewContext.setCommitCount(commitCount);
+
+                        if (hasHash && commitCount == 1) {
+                            reviewContext.setReviewScope(ReviewScope.DIFF_REVIEW);
+                            reviewContext.setScopeDescription("本次 diff 审查（1 个 commit）");
+                        } else if (hasHash && commitCount > 1) {
+                            reviewContext.setReviewScope(ReviewScope.BRANCH_REVIEW);
+                            // 生成范围描述文本
+                            String sinceDate = "?";
+                            if (commits != null && !commits.isEmpty()) {
+                                Commit oldest = commits.get(commits.size() - 1);
+                                if (oldest.getCreatedAt() != null) {
+                                    sinceDate = new SimpleDateFormat("yyyy-MM-dd").format(oldest.getCreatedAt());
+                                }
+                            }
+                            reviewContext.setScopeDescription("分支范围审查（自 " + sinceDate
+                                    + " 起共 " + commitCount + " 个 commit）");
+                        } else {
+                            reviewContext.setReviewScope(ReviewScope.FULL_SCAN);
+                            reviewContext.setScopeDescription("全量项目扫描");
+                        }
+
+                        // gitRemoteUrl — 通过 JGit API 从已 clone 的仓库读取
+                        try {
+                            File gitDir = new File(repoPath, ".git");
+                            if (gitDir.exists()) {
+                                Repository jgitRepo = new FileRepositoryBuilder()
+                                        .setGitDir(gitDir).build();
+                                String remoteUrl = jgitRepo.getConfig()
+                                        .getString("remote", "origin", "url");
+                                jgitRepo.close();
+                                reviewContext.setGitRemoteUrl(remoteUrl);
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to read git remote url from {}: {}", repoPath, e.getMessage());
+                            reviewContext.setGitRemoteUrl(null);
+                        }
+
+                        log.info("Phase 4 context: scope={}, commits={}, remoteUrl={}",
+                                reviewContext.getReviewScope(),
+                                reviewContext.getCommitCount(),
+                                reviewContext.getGitRemoteUrl() != null
+                                        ? reviewContext.getGitRemoteUrl() : "null");
 
                         CodeReviewResult reviewResult = codeReviewAiService.review(reviewContext);
 

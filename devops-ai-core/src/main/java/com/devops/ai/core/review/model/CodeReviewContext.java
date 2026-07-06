@@ -2,6 +2,7 @@ package com.devops.ai.core.review.model;
 
 import com.devops.ai.core.model.Commit;
 
+import java.util.Date;
 import java.util.List;
 
 public class CodeReviewContext {
@@ -16,6 +17,12 @@ public class CodeReviewContext {
     private String gitRemoteUrl;    // 远程仓库 URL（Phase 1 新增，Phase 8 拼接 codeLink）
     private String sinceHash;       // 审查起始 commit hash（用于 code_review_diff）
     private String untilHash;       // 审查结束 commit hash（用于 code_review_diff）
+
+    // --- Phase 4 新增 ---
+    private ReviewScope reviewScope;        // 审查范围枚举
+    private String scopeDescription;        // 范围描述文本（如"自 2025-01-15 起共 78 个 commit"）
+    private int commitCount;                // commit 数量
+    private Date reviewDate;                // 审查日期（Phase 8 用于截止时间计算）
 
     public String getProjectName() { return projectName; }
     public void setProjectName(String projectName) { this.projectName = projectName; }
@@ -39,4 +46,14 @@ public class CodeReviewContext {
     public void setSinceHash(String sinceHash) { this.sinceHash = sinceHash; }
     public String getUntilHash() { return untilHash; }
     public void setUntilHash(String untilHash) { this.untilHash = untilHash; }
+
+    // --- Phase 4 新增 getter/setter ---
+    public ReviewScope getReviewScope() { return reviewScope; }
+    public void setReviewScope(ReviewScope reviewScope) { this.reviewScope = reviewScope; }
+    public String getScopeDescription() { return scopeDescription; }
+    public void setScopeDescription(String scopeDescription) { this.scopeDescription = scopeDescription; }
+    public int getCommitCount() { return commitCount; }
+    public void setCommitCount(int commitCount) { this.commitCount = commitCount; }
+    public Date getReviewDate() { return reviewDate; }
+    public void setReviewDate(Date reviewDate) { this.reviewDate = reviewDate; }
 }

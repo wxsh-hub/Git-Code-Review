@@ -6,19 +6,20 @@ import com.devops.ai.infrastructure.entity.AiConfig;
 import com.devops.ai.infrastructure.exception.AiServiceException;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Component
 public class CodeReviewAiService {
 
     private static final Logger log = LoggerFactory.getLogger(CodeReviewAiService.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static final Map<String, String> DEFAULT_API_URLS = new LinkedHashMap<>();
 
@@ -31,15 +32,364 @@ public class CodeReviewAiService {
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
     private final ConfigEncryptor configEncryptor;
+    private final OcrmcpClient ocrmcpClient;
+    private final SecretDetector secretDetector;
+    private final FindingVerifier findingVerifier;
+
+    @Value("${ocr.fallback-on-error:true}")
+    private boolean ocrFallbackOnError;
 
     public CodeReviewAiService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
-                               ConfigEncryptor configEncryptor) {
+                               ConfigEncryptor configEncryptor, OcrmcpClient ocrmcpClient,
+                               SecretDetector secretDetector, FindingVerifier findingVerifier) {
         this.llmClient = llmClient;
         this.aiConfigRepository = aiConfigRepository;
         this.configEncryptor = configEncryptor;
+        this.ocrmcpClient = ocrmcpClient;
+        this.secretDetector = secretDetector;
+        this.findingVerifier = findingVerifier;
     }
 
+    // ================================================================
+    // 主入口：优先 OCR，自动 fallback
+    // ================================================================
+
     public CodeReviewResult review(CodeReviewContext context) {
+        try {
+            if (!ocrmcpClient.isAvailable()) {
+                log.info("OCR not available, falling back to legacy review");
+                return reviewLegacy(context);
+            }
+            return reviewWithOcr(context);
+        } catch (Exception e) {
+            log.error("OCR review failed, falling back to legacy: {}", e.getMessage());
+            if (ocrFallbackOnError) {
+                return reviewLegacy(context);
+            }
+            throw new AiServiceException("OCR review failed", e);
+        }
+    }
+
+    // ================================================================
+    // Phase 4: 审查流水线（三步）
+    // ================================================================
+
+    // --- 管线数据模型 ---
+
+    /** 审查后处理管线接口（Phase 4 框架，后续 Phase 填充） */
+    interface FindingPostProcessor {
+        List<Finding> process(List<Finding> findings, CodeReviewContext context);
+    }
+
+    /** 业务链路分组模型 */
+    static class ReviewGroup {
+        String name;                    // 业务链路名，如 "user"
+        List<FileDiff> files;          // 该组的文件列表
+        String background;              // 审查背景上下文
+
+        ReviewGroup(String name, List<FileDiff> files, String background) {
+            this.name = name;
+            this.files = files;
+            this.background = background;
+        }
+    }
+
+    // ================================================================
+    // OCR 路径（三步流水线）
+    // ================================================================
+
+    private CodeReviewResult reviewWithOcr(CodeReviewContext context) throws Exception {
+        List<FileDiff> diffs = context.getFileDiffs();
+
+        // Step 1: 文件预筛选
+        List<FileDiff> filtered = preFilter(diffs);
+
+        // Step 2: 按业务链路分组
+        Map<String, ReviewGroup> groups = groupByBusinessLink(filtered, context);
+
+        // Step 3: 逐组调用 OCR MCP → 转换为 Finding
+        List<Finding> allFindings = new ArrayList<>();
+
+        for (ReviewGroup group : groups.values()) {
+            try {
+                List<Finding> groupFindings = reviewGroup(group, context);
+                allFindings.addAll(groupFindings);
+                log.info("Group '{}' reviewed: {} findings from {} files",
+                        group.name, groupFindings.size(), group.files.size());
+            } catch (Exception e) {
+                log.error("Group '{}' review failed: {}", group.name, e.getMessage());
+                // 一组失败不中断其他组
+            }
+        }
+
+        // 后处理管线
+        allFindings = runPipeline(allFindings, context);
+
+        // 构建 CodeReviewResult（兼容旧接口）
+        return buildResultFromFindings(allFindings, groups, context);
+    }
+
+    // ================================================================
+    // Step 1: 文件预筛选
+    // ================================================================
+
+    /**
+     * 跳过 DELETE 类型文件和非代码文件。
+     */
+    List<FileDiff> preFilter(List<FileDiff> diffs) {
+        if (diffs == null || diffs.isEmpty()) return Collections.emptyList();
+
+        List<FileDiff> filtered = new ArrayList<>();
+        for (FileDiff diff : diffs) {
+            // 跳过已删除的文件
+            String changeType = diff.getChangeType();
+            if ("DELETE".equalsIgnoreCase(changeType) || "deleted".equalsIgnoreCase(changeType)) {
+                log.debug("Pre-filter: skipping deleted file {}", diff.getFilePath());
+                continue;
+            }
+
+            // 跳过非代码文件
+            String path = diff.getFilePath();
+            if (path != null && isNonCodeFile(path)) {
+                log.debug("Pre-filter: skipping non-code file {}", path);
+                continue;
+            }
+
+            filtered.add(diff);
+        }
+
+        log.info("Pre-filter: {} → {} files (skipped {} non-code/deleted)",
+                diffs.size(), filtered.size(), diffs.size() - filtered.size());
+        return filtered;
+    }
+
+    /** 判断是否为非代码文件（图片、二进制、文档等） */
+    private boolean isNonCodeFile(String path) {
+        String lower = path.toLowerCase();
+        // 二进制/图片/文档/字体
+        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                || lower.endsWith(".gif") || lower.endsWith(".ico") || lower.endsWith(".svg")
+                || lower.endsWith(".pdf") || lower.endsWith(".doc") || lower.endsWith(".docx")
+                || lower.endsWith(".xls") || lower.endsWith(".xlsx") || lower.endsWith(".ppt")
+                || lower.endsWith(".zip") || lower.endsWith(".jar") || lower.endsWith(".war")
+                || lower.endsWith(".tar") || lower.endsWith(".gz") || lower.endsWith(".bz2")
+                || lower.endsWith(".woff") || lower.endsWith(".woff2") || lower.endsWith(".ttf")
+                || lower.endsWith(".eot") || lower.endsWith(".mp3") || lower.endsWith(".mp4")
+                || lower.endsWith(".avi") || lower.endsWith(".mov")
+                || lower.endsWith(".lock") || lower.endsWith(".sum");
+    }
+
+    // ================================================================
+    // Step 2: 按业务链路分组
+    // ================================================================
+
+    /**
+     * 按文件路径提取业务领域名并分组，每组构建审查背景上下文。
+     */
+    Map<String, ReviewGroup> groupByBusinessLink(List<FileDiff> diffs, CodeReviewContext context) {
+        Map<String, List<FileDiff>> byModule = new LinkedHashMap<>();
+
+        for (FileDiff diff : diffs) {
+            String module = ModulePathResolver.resolveModule(diff.getFilePath());
+            byModule.computeIfAbsent(module, k -> new ArrayList<>()).add(diff);
+        }
+
+        // 全局 background（code-review-graph 架构分析）
+        String globalBg = buildGraphBackground(context);
+
+        Map<String, ReviewGroup> groups = new LinkedHashMap<>();
+        for (Map.Entry<String, List<FileDiff>> entry : byModule.entrySet()) {
+            String module = entry.getKey();
+            List<FileDiff> files = entry.getValue();
+
+            // 每组 background = 模块信息 + 全局架构分析
+            StringBuilder bg = new StringBuilder();
+            bg.append("## 模块: ").append(module).append("（").append(files.size()).append(" 个文件）\n");
+            bg.append("文件列表:\n");
+            for (FileDiff f : files) {
+                bg.append("- ").append(f.getFilePath())
+                        .append(" (").append(f.getChangeType() != null ? f.getChangeType() : "MODIFY").append(")\n");
+            }
+            if (globalBg != null && !globalBg.isEmpty()) {
+                bg.append("\n").append(globalBg);
+            }
+
+            groups.put(module, new ReviewGroup(module, files, bg.toString()));
+        }
+
+        log.info("Grouped {} files into {} module(s): {}", diffs.size(), groups.size(), groups.keySet());
+        return groups;
+    }
+
+    // ================================================================
+    // Step 3: 逐组审查
+    // ================================================================
+
+    /**
+     * 对一个业务链路组调用 OCR MCP 审查，产出 Finding 列表。
+     */
+    List<Finding> reviewGroup(ReviewGroup group, CodeReviewContext context) throws Exception {
+        // 确定 tool 名称
+        String toolName;
+        Map<String, Object> args = new HashMap<>();
+        args.put("repo_dir", context.getRepoPath() != null ? context.getRepoPath() : "");
+        args.put("background", group.background);
+        if (getModel() != null && !getModel().isEmpty()) {
+            args.put("model", getModel());
+        }
+
+        // 拼装该组的文件路径列表
+        String paths = group.files.stream()
+                .map(FileDiff::getFilePath)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(","));
+        if (paths.isEmpty()) {
+            log.warn("Group '{}': no valid file paths, skipping review", group.name);
+            return Collections.emptyList();
+        }
+        args.put("path", paths);
+
+        if (context.getSinceHash() != null && context.getUntilHash() != null) {
+            toolName = "code_review_diff";
+            args.put("from", context.getSinceHash());
+            args.put("to", context.getUntilHash());
+        } else {
+            toolName = "code_scan";
+        }
+
+        log.info("Reviewing group '{}': tool={}, {} files, path sample: {}",
+                group.name, toolName, group.files.size(),
+                paths.length() > 80 ? paths.substring(0, 80) + "..." : paths);
+
+        String ocrJson = ocrmcpClient.callTool(toolName, args);
+        OcrReviewResponse ocrResult = MAPPER.readValue(ocrJson, OcrReviewResponse.class);
+
+        // OcrComment → Finding 转换
+        List<Finding> findings = new ArrayList<>();
+        List<OcrComment> comments = ocrResult.getComments();
+        if (comments != null) {
+            for (OcrComment cm : comments) {
+                Finding f = Finding.fromOcrComment(cm);
+                f.setModuleName(group.name); // Phase 8 模块趋势页聚合键
+                findings.add(f);
+            }
+        }
+
+        log.info("Group '{}': {} ocr comments → {} findings", group.name,
+                comments != null ? comments.size() : 0, findings.size());
+        return findings;
+    }
+
+    // ================================================================
+    // 后处理管线
+    // ================================================================
+
+    /**
+     * 执行审查后处理管线。
+     *
+     * <p>管线顺序（Phase 4 当前注册 SecretDetector + FindingVerifier）：
+     * <pre>
+     *   List&lt;Finding&gt; raw
+     *     │
+     *     ├─ [Phase 5] FindingBlameTracer.trace()      ← TODO 插入点
+     *     ├─ [Phase 6] ReviewLlmService.crossValidate() ← TODO 插入点
+     *     ├─ SecretDetector.detectAndSanitize()         ← Phase 3，已注册
+     *     ├─ FindingVerifier.verify()                   ← Phase 3，已注册
+     *     └─ 输出
+     * </pre>
+     */
+    List<Finding> runPipeline(List<Finding> findings, CodeReviewContext context) {
+        if (findings == null || findings.isEmpty()) return Collections.emptyList();
+
+        // Phase 3: SecretDetector — 脱敏 + 新增 SECRET_EXPOSURE
+        List<Finding> newSecretFindings = secretDetector.detectAndSanitize(findings);
+
+        // Phase 3: FindingVerifier — 行号校验/去重/误报/触发完整性
+        FilterResult fr = findingVerifier.verify(findings, context.getRepoPath());
+        List<Finding> verified = fr.toPipelineOutput();
+
+        // 追加 SecretDetector 新产出的 SECRET_EXPOSURE Finding（已脱敏，无需重复校验）
+        verified.addAll(newSecretFindings);
+
+        log.info("Pipeline complete: {} findings → {} after verify + {} secret → {} total",
+                findings.size(), verified.size() - newSecretFindings.size(),
+                newSecretFindings.size(), verified.size());
+
+        // ===== Phase 5 插入点 =====
+        // verified = new FindingBlameTracer().process(verified, context);
+        // ===== Phase 6 插入点 =====
+        // verified = new ReviewLlmCrossValidator().process(verified, context);
+
+        return verified;
+    }
+
+    // ================================================================
+    // Finding → CodeReviewResult 转换（过渡期兼容）
+    // ================================================================
+
+    /**
+     * 从最终 Finding 列表构建 CodeReviewResult。
+     *
+     * <p>Phase 8 之前，GenerationOrchestrator 仍需要 CodeReviewResult 来生成报告。
+     * Phase 8 ReviewReportGenerator 全面切换到 Finding 渲染后，此方法可移除。</p>
+     */
+    private CodeReviewResult buildResultFromFindings(List<Finding> findings,
+                                                      Map<String, ReviewGroup> groups,
+                                                      CodeReviewContext context) {
+        CodeReviewResult result = new CodeReviewResult();
+        result.setFindings(findings);
+
+        // 统计
+        long p0 = findings.stream().filter(f -> f.getSeverity() == FindingSeverity.BLOCKER).count();
+        long p1 = findings.stream().filter(f -> f.getSeverity() == FindingSeverity.HIGH).count();
+        long confirmed = findings.stream().filter(f -> f.getStatus() == FindingStatus.CONFIRMED).count();
+
+        if (findings.isEmpty()) {
+            result.setConclusion("通过");
+            result.setRiskLevel("低");
+            result.setKeyFindings("AI 审查未发现代码缺陷");
+        } else {
+            result.setConclusion(p0 > 0 ? "需修改" : "建议修改");
+            result.setRiskLevel(p0 > 0 || p1 >= 3 ? "高" : (p1 > 0 ? "中" : "低"));
+            result.setKeyFindings(String.format("发现 %d 个问题（P0=%d, P1=%d, 已确认=%d），涉及 %d 个模块",
+                    findings.size(), p0, p1, confirmed, groups.size()));
+        }
+
+        result.setChangeSummary(context.getScopeDescription() != null
+                ? context.getScopeDescription() : null);
+        result.setCodeIssues(formatFindingsAsText(findings));
+        result.setRawResponse(null);
+
+        return result;
+    }
+
+    /** 将 Finding 列表格式化为可读文本（旧 CodeReviewResult.codeIssues 格式） */
+    private String formatFindingsAsText(List<Finding> findings) {
+        if (findings == null || findings.isEmpty()) {
+            return "（本次审查未发现代码缺陷）";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Finding f : findings) {
+            String sev = f.getSeverity() != null ? f.getSeverity().getLabel() : "未知";
+            sb.append("- **[").append(sev).append("]** `").append(f.getFile()).append("`")
+                    .append(" (第").append(f.getStartLine()).append("-").append(f.getEndLine()).append("行)");
+            if (f.getModuleName() != null) {
+                sb.append(" [").append(f.getModuleName()).append("]");
+            }
+            sb.append("\n");
+            if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
+                sb.append("  > ").append(truncate(f.getEvidence(), 200)).append("\n");
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    // ================================================================
+    // Legacy 路径（保留完整实现作为 fallback）
+    // ================================================================
+
+    public CodeReviewResult reviewLegacy(CodeReviewContext context) {
         CodeReviewResult result = new CodeReviewResult();
         try {
             String prompt = buildReviewPrompt(context);
@@ -55,6 +405,75 @@ public class CodeReviewAiService {
         }
     }
 
+    // ================================================================
+    // Graph 上下文构建
+    // ================================================================
+
+    /**
+     * 将 code-review-graph 的分析结果转为审查背景文本。
+     * 这段文本会作为 background 参数传给 OCR，LLM 在审查时能结合架构信息做判断。
+     */
+    private String buildGraphBackground(CodeReviewContext context) {
+        String graphJson = context.getGraphAnalysisJson();
+
+        // 尝试从 JSON 解析 ImpactScope
+        ImpactScope scope = null;
+        if (graphJson != null && !graphJson.isEmpty()) {
+            try {
+                CodeReviewGraph graph = MAPPER.readValue(graphJson, CodeReviewGraph.class);
+                if (graph.getImpactScope() != null) {
+                    scope = graph.getImpactScope();
+                }
+            } catch (Exception e) {
+                // graphJson 可能不是标准的 CodeReviewGraph JSON，尝试从对象中直接取
+                CodeReviewGraph graph = context.getGraph();
+                if (graph != null && graph.getImpactScope() != null) {
+                    scope = graph.getImpactScope();
+                }
+            }
+        } else {
+            // fallback: 从内存对象取
+            CodeReviewGraph graph = context.getGraph();
+            if (graph != null && graph.getImpactScope() != null) {
+                scope = graph.getImpactScope();
+            }
+        }
+
+        if (scope == null) {
+            return "请全面审查代码缺陷：空指针、事务边界、并发安全、异常处理、资源释放。";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("以下是通过静态分析发现的架构信息，请结合进行代码审查：");
+
+        sb.append("\n\n## 影响范围\n");
+        sb.append("- 风险等级: ").append(scope.getRiskLevel()).append("\n");
+        if (scope.getDirectlyAffectedFiles() != null) {
+            sb.append("- 直接影响文件数: ").append(scope.getDirectlyAffectedFiles().size()).append("\n");
+        }
+        if (scope.getIndirectlyAffectedFiles() != null) {
+            sb.append("- 间接影响文件数: ").append(scope.getIndirectlyAffectedFiles().size()).append("\n");
+        }
+
+        if (scope.getRiskSignals() != null && !scope.getRiskSignals().isEmpty()) {
+            sb.append("\n## 架构风险信号\n");
+            for (String signal : scope.getRiskSignals()) {
+                sb.append("- ").append(signal).append("\n");
+            }
+        }
+
+        sb.append("\n## 审查重点\n");
+        sb.append("1. 空指针风险、事务边界(@Transactional)、并发安全、资源释放、异常处理\n");
+        sb.append("2. 被间接影响的文件是否也需要同步修改\n");
+        sb.append("3. 架构风险信号指向的模块是否确实存在设计问题\n");
+
+        return sb.toString();
+    }
+
+    // ================================================================
+    // Legacy prompt / parsing（不变）
+    // ================================================================
+
     private String buildReviewPrompt(CodeReviewContext context) {
         StringBuilder sb = new StringBuilder();
         sb.append("你是一个资深的 Java 代码审查专家。请审查以下代码变更。\n\n");
@@ -63,7 +482,6 @@ public class CodeReviewAiService {
         sb.append("- 版本：").append(context.getProjectVersion() != null ? context.getProjectVersion() : "unknown").append("\n");
         sb.append("- 分支：").append(context.getBranch() != null ? context.getBranch() : "unknown").append("\n\n");
 
-        // File diffs
         List<FileDiff> diffs = context.getFileDiffs();
         if (diffs != null && !diffs.isEmpty()) {
             sb.append("## 变更文件及 Diff\n");
@@ -77,13 +495,11 @@ public class CodeReviewAiService {
             }
         }
 
-        // Graph analysis (from code-review-graph CLI)
         String graphJson = context.getGraphAnalysisJson();
         if (graphJson != null && !graphJson.isEmpty()) {
             sb.append("## code-review-graph 静态分析结果\n");
             sb.append("```json\n").append(graphJson).append("\n```\n\n");
         } else {
-            // Fallback: use in-memory graph summary
             CodeReviewGraph graph = context.getGraph();
             if (graph != null && graph.getNodes() != null && !graph.getNodes().isEmpty()) {
                 sb.append("## 依赖关系图谱摘要\n");
@@ -98,7 +514,6 @@ public class CodeReviewAiService {
                 }
                 sb.append("\n");
 
-                // Impact scope
                 if (graph.getImpactScope() != null) {
                     ImpactScope scope = graph.getImpactScope();
                     sb.append("## 影响范围分析\n");
@@ -159,7 +574,6 @@ public class CodeReviewAiService {
             return result;
         }
 
-        // Try to extract sections by markdown headers
         String[] sections = response.split("(?m)^###\\s+\\d+\\.\\s+");
         for (String section : sections) {
             section = section.trim();
@@ -185,7 +599,6 @@ public class CodeReviewAiService {
             }
         }
 
-        // Fill missing from raw response
         if (result.getConclusion() == null) {
             if (response.contains("通过")) result.setConclusion("通过");
             else if (response.contains("需修改")) result.setConclusion("需修改");
