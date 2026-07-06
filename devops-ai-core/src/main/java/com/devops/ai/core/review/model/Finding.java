@@ -111,6 +111,13 @@ public class Finding {
     private String moduleName;
 
     // ================================================================
+    // Blame 扩展字段（Phase 5 填充）
+    // ================================================================
+
+    /** blame 归属详情，key = commitId（Phase 5 填充） */
+    private java.util.Map<String, BlameShare> blameDetails;
+
+    // ================================================================
     // 构造器
     // ================================================================
 
@@ -389,4 +396,8 @@ public class Finding {
 
     public String getModuleName() { return moduleName; }
     public void setModuleName(String moduleName) { this.moduleName = moduleName; }
+
+    // --- Phase 5 blameDetails ---
+    public java.util.Map<String, BlameShare> getBlameDetails() { return blameDetails; }
+    public void setBlameDetails(java.util.Map<String, BlameShare> blameDetails) { this.blameDetails = blameDetails; }
 }

@@ -33,6 +33,7 @@ public class CodeReviewAiService {
     private final AiConfigRepository aiConfigRepository;
     private final ConfigEncryptor configEncryptor;
     private final OcrmcpClient ocrmcpClient;
+    private final FindingBlameTracer findingBlameTracer;
     private final SecretDetector secretDetector;
     private final FindingVerifier findingVerifier;
 
@@ -41,11 +42,13 @@ public class CodeReviewAiService {
 
     public CodeReviewAiService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
                                ConfigEncryptor configEncryptor, OcrmcpClient ocrmcpClient,
+                               FindingBlameTracer findingBlameTracer,
                                SecretDetector secretDetector, FindingVerifier findingVerifier) {
         this.llmClient = llmClient;
         this.aiConfigRepository = aiConfigRepository;
         this.configEncryptor = configEncryptor;
         this.ocrmcpClient = ocrmcpClient;
+        this.findingBlameTracer = findingBlameTracer;
         this.secretDetector = secretDetector;
         this.findingVerifier = findingVerifier;
     }
@@ -287,39 +290,42 @@ public class CodeReviewAiService {
     /**
      * 执行审查后处理管线。
      *
-     * <p>管线顺序（Phase 4 当前注册 SecretDetector + FindingVerifier）：
+     * <p>管线顺序：
      * <pre>
      *   List&lt;Finding&gt; raw
      *     │
-     *     ├─ [Phase 5] FindingBlameTracer.trace()      ← TODO 插入点
-     *     ├─ [Phase 6] ReviewLlmService.crossValidate() ← TODO 插入点
-     *     ├─ SecretDetector.detectAndSanitize()         ← Phase 3，已注册
-     *     ├─ FindingVerifier.verify()                   ← Phase 3，已注册
+     *     ├─ Phase 5: FindingBlameTracer.trace()          ← 对 P0/P1 做 git blame
+     *     ├─ [Phase 6] ReviewLlmService.crossValidate()    ← TODO 插入点
+     *     ├─ Phase 3:  SecretDetector.detectAndSanitize()  ← 脱敏 + SECRET_EXPOSURE
+     *     ├─ Phase 3:  FindingVerifier.verify()            ← 行号校验/去重/误报/完整性
      *     └─ 输出
      * </pre>
+     *
+     * <p>BlameTracer 必须排在首位——blame 结果需要完整原文（脱敏前），
+     * 且 blame 产出的 owner/commitMessage 是 SecretDetector 的输入。</p>
      */
     List<Finding> runPipeline(List<Finding> findings, CodeReviewContext context) {
         if (findings == null || findings.isEmpty()) return Collections.emptyList();
 
-        // Phase 3: SecretDetector — 脱敏 + 新增 SECRET_EXPOSURE
-        List<Finding> newSecretFindings = secretDetector.detectAndSanitize(findings);
+        // ===== Phase 5: Blame 追溯（P0/P1）=====
+        List<Finding> traced = findingBlameTracer.trace(findings, context.getRepoPath());
 
-        // Phase 3: FindingVerifier — 行号校验/去重/误报/触发完整性
-        FilterResult fr = findingVerifier.verify(findings, context.getRepoPath());
+        // ===== Phase 6 插入点 =====
+        // traced = reviewLlmService.crossValidate(traced, context);
+
+        // ===== Phase 3: SecretDetector — 脱敏 + 新增 SECRET_EXPOSURE =====
+        List<Finding> newSecretFindings = secretDetector.detectAndSanitize(traced);
+
+        // ===== Phase 3: FindingVerifier — 行号校验/去重/误报/完整性 =====
+        FilterResult fr = findingVerifier.verify(traced, context.getRepoPath());
         List<Finding> verified = fr.toPipelineOutput();
 
-        // 追加 SecretDetector 新产出的 SECRET_EXPOSURE Finding（已脱敏，无需重复校验）
+        // 追加 SecretDetector 新产出的 SECRET_EXPOSURE Finding
         verified.addAll(newSecretFindings);
 
         log.info("Pipeline complete: {} findings → {} after verify + {} secret → {} total",
                 findings.size(), verified.size() - newSecretFindings.size(),
                 newSecretFindings.size(), verified.size());
-
-        // ===== Phase 5 插入点 =====
-        // verified = new FindingBlameTracer().process(verified, context);
-        // ===== Phase 6 插入点 =====
-        // verified = new ReviewLlmCrossValidator().process(verified, context);
-
         return verified;
     }
 
