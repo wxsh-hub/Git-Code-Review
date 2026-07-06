@@ -13,11 +13,18 @@ import org.springframework.stereotype.Component;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.Calendar;
 
 @Component
 public class ReviewReportGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewReportGenerator.class);
+
+    private final ModuleReportGenerator moduleReportGenerator;
+
+    public ReviewReportGenerator(ModuleReportGenerator moduleReportGenerator) {
+        this.moduleReportGenerator = moduleReportGenerator;
+    }
 
     // ================================================================
     // 主入口：自动选择段落式报告或行级增强报告
@@ -53,93 +60,318 @@ public class ReviewReportGenerator {
     private String generateFindingsMarkdown(CodeReviewResult result, CodeReviewContext context) {
         List<Finding> findings = result.getFindings();
         StringBuilder sb = new StringBuilder();
-        sb.append("# 代码审查报告\n\n");
 
-        // ---- 审查范围（Phase 4 新增，放在报告第一行） ----
+        // ================================================================
+        // 第一页：管理摘要
+        // ================================================================
+        generateManagementSummary(sb, findings, context);
+
+        sb.append("\n---\n\n");
+
+        // ================================================================
+        // 第二页：问题处置页
+        // ================================================================
+        generateDispositionPage(sb, findings, context);
+
+        sb.append("\n---\n\n");
+
+        // ================================================================
+        // 第三页：模块与趋势页
+        // ================================================================
+        sb.append(moduleReportGenerator.generate(findings));
+
+        log.info("Phase 8 four-page report generated (markdown, {} findings, {} chars)", findings.size(), sb.length());
+        return sb.toString();
+    }
+
+    // ================================================================
+    // 第一页：管理摘要
+    // ================================================================
+
+    private void generateManagementSummary(StringBuilder sb, List<Finding> findings, CodeReviewContext context) {
+        long p0 = countBySeverity(findings, FindingSeverity.BLOCKER);
+        long p1 = countBySeverity(findings, FindingSeverity.HIGH);
+        long p2 = countBySeverity(findings, FindingSeverity.MEDIUM);
+        long p3 = countBySeverity(findings, FindingSeverity.LOW);
+        long p0Confirmed = countConfirmed(findings, FindingSeverity.BLOCKER);
+        long p1Confirmed = countConfirmed(findings, FindingSeverity.HIGH);
+
+        sb.append("# 管理摘要\n\n");
+
+        // 1) 审查范围
         if (context.getReviewScope() != null) {
             sb.append("> **审查范围**：").append(context.getScopeDescription() != null
                     ? context.getScopeDescription()
                     : context.getReviewScope().getLabel()).append("\n\n");
         }
 
-        // 头部信息
+        // 2) 版本/分支
         sb.append("| 项目 | ").append(nvl(context.getProjectName())).append(" |\n");
         sb.append("|------|---------------|\n");
         sb.append("| 版本 | ").append(nvl(context.getProjectVersion())).append(" |\n");
         sb.append("| 分支 | ").append(nvl(context.getBranch())).append(" |\n");
         sb.append("| 审查时间 | ").append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())).append(" |\n");
-        if (context.getCommits() != null) {
-            sb.append("| 审查范围 | ").append(context.getCommits().size()).append(" commits |\n");
+        sb.append("\n");
+
+        // 3) 风险等级
+        String riskLevel;
+        String riskIcon;
+        if (p0 >= 3) {
+            riskLevel = "严重";
+            riskIcon = "🔴";
+        } else if (p0 >= 1) {
+            riskLevel = "高";
+            riskIcon = "🟡";
+        } else if (p1 >= 5) {
+            riskLevel = "高";
+            riskIcon = "🟡";
+        } else if (p1 >= 1) {
+            riskLevel = "中";
+            riskIcon = "🔵";
+        } else {
+            riskLevel = "低";
+            riskIcon = "🟢";
         }
-        sb.append("\n---\n\n");
+        sb.append("**风险等级**：").append(riskIcon).append(" ").append(riskLevel).append("\n\n");
 
-        // 按严重度分组
-        long p0 = findings.stream().filter(f -> f.getSeverity() == FindingSeverity.BLOCKER).count();
-        long p1 = findings.stream().filter(f -> f.getSeverity() == FindingSeverity.HIGH).count();
-        long p2 = findings.stream().filter(f -> f.getSeverity() == FindingSeverity.MEDIUM).count();
-
-        sb.append("## 审查摘要\n\n");
-        sb.append("| 级别 | 数量 |\n");
-        sb.append("|------|------|\n");
-        sb.append("| P0 阻断 | ").append(p0).append(" |\n");
-        sb.append("| P1 高危 | ").append(p1).append(" |\n");
-        sb.append("| P2 中危 | ").append(p2).append(" |\n");
+        // 4) 问题统计表
+        sb.append("### 问题统计\n\n");
+        sb.append("| 级别 | 数量 | 已确认 |\n");
+        sb.append("|------|------|--------|\n");
+        sb.append("| P0 阻断 | ").append(p0).append(" | ").append(p0Confirmed).append(" |\n");
+        sb.append("| P1 高危 | ").append(p1).append(" | ").append(p1Confirmed).append(" |\n");
+        sb.append("| P2 中危 | ").append(p2).append(" | - |\n");
         sb.append("\n");
 
         if (findings.isEmpty()) {
             sb.append("**审查结论**: 通过 — 未发现代码缺陷\n\n");
-            return sb.toString();
+            return;
         }
 
-        // 按文件分组
-        Map<String, List<Finding>> byFile = new LinkedHashMap<>();
+        // 5) 是否建议发布
+        sb.append("### 发布建议\n\n");
+        if (p0 > 0) {
+            sb.append("⛔ **不建议发布** — 存在 P0 阻断性问题，须全部修复后重新审查\n\n");
+        } else if (p1 >= 3) {
+            sb.append("⚠ **建议修复后发布** — P1 高危问题较多，建议修复后再上线\n\n");
+        } else if (p1 >= 1) {
+            sb.append("⚠ **有条件发布** — 少量 P1 问题，建议排入下个迭代修复\n\n");
+        } else {
+            sb.append("✅ **建议发布** — 无阻断/高危问题，可正常上线\n\n");
+        }
+
+        // 6) 待处理事项
+        sb.append("### 待处理事项\n\n");
+        sb.append("| 优先级 | 问题 | 文件 | 处理人 | 截止时间 |\n");
+        sb.append("|--------|------|------|--------|----------|\n");
+
+        List<Finding> highPriority = new ArrayList<>();
         for (Finding f : findings) {
-            String key = f.getFile() != null ? f.getFile() : "(unknown)";
-            byFile.computeIfAbsent(key, k -> new ArrayList<>()).add(f);
-        }
-
-        sb.append("## 问题详情\n\n");
-        int idx = 1;
-        for (Map.Entry<String, List<Finding>> entry : byFile.entrySet()) {
-            sb.append("### ").append(idx++).append(". `").append(entry.getKey()).append("`\n\n");
-            for (Finding f : entry.getValue()) {
-                String sevLevel = f.getSeverity() != null ? f.getSeverity().getLevel() : "?";
-                sb.append(String.format("**[%s] 第 %d-%d 行**", sevLevel, f.getStartLine(), f.getEndLine()));
-                if (f.getModuleName() != null) {
-                    sb.append(" [").append(f.getModuleName()).append("]");
-                }
-                sb.append("\n\n");
-
-                if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
-                    sb.append("> 证据：\n> ```java\n> ").append(f.getEvidence().replace("\n", "\n> ")).append("\n> ```\n\n");
-                }
-                if (f.getSuggestedFix() != null && !f.getSuggestedFix().isEmpty()) {
-                    String fix = f.getSuggestedFix().length() > 300
-                            ? f.getSuggestedFix().substring(0, 300) + "..." : f.getSuggestedFix();
-                    sb.append("> 建议修复：`").append(fix).append("`\n\n");
-                }
-
-                // 归属信息（Phase 5 填充）
-                if (f.getOwner() != null && !f.getOwner().isEmpty()) {
-                    sb.append("> 引入者：").append(f.getOwner()).append("\n\n");
-                }
+            FindingSeverity s = f.getSeverity();
+            if (s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH) {
+                highPriority.add(f);
             }
         }
+        // P0 first, P1 second
+        highPriority.sort(Comparator.comparingInt(f -> f.getSeverity().ordinal()));
 
-        // 结论
-        sb.append("## 审查结论\n\n");
-        sb.append("**结论**: ").append(nvl(result.getConclusion())).append("\n\n");
-        sb.append("**风险等级**: ").append(nvl(result.getRiskLevel())).append("\n\n");
-        if (result.getKeyFindings() != null && !result.getKeyFindings().isEmpty()) {
-            sb.append("**关键发现**: ").append(result.getKeyFindings()).append("\n\n");
+        int limit = Math.min(highPriority.size(), 15);
+        for (int i = 0; i < limit; i++) {
+            Finding f = highPriority.get(i);
+            String icon = f.getSeverity() == FindingSeverity.BLOCKER ? "⛔ P0" : "⚠ P1";
+            String file = f.getFile() != null ? f.getFile() : "-";
+            String desc = f.getEvidence() != null ? truncateLine(f.getEvidence(), 50) : "-";
+            String handler = f.getCandidateHandler() != null && !f.getCandidateHandler().isEmpty()
+                    ? f.getCandidateHandler() : "待指派";
+            String deadline = computeDeadline(f.getSeverity(), context.getReviewDate());
+
+            sb.append("| ").append(icon).append(" | ")
+                    .append(desc).append(" | ")
+                    .append(file).append(" | ")
+                    .append(handler).append(" | ")
+                    .append(deadline).append(" |\n");
+        }
+        sb.append("\n");
+    }
+
+    // ================================================================
+    // 第二页：问题处置页
+    // ================================================================
+
+    private void generateDispositionPage(StringBuilder sb, List<Finding> findings, CodeReviewContext context) {
+        sb.append("# 问题处置页\n\n");
+
+        if (findings.isEmpty()) {
+            sb.append("*本次审查未发现代码问题*\n\n");
+            return;
         }
 
-        log.info("Finding-based review report generated (markdown, {} findings, {} chars)", findings.size(), sb.length());
-        return sb.toString();
+        // 按严重度排序：P0 → P1 → P2 → P3 → P4
+        List<Finding> sorted = new ArrayList<>(findings);
+        sorted.sort(Comparator
+                .comparingInt((Finding f) -> f.getSeverity() != null ? f.getSeverity().ordinal() : 99)
+                .thenComparing(f -> f.getFile() != null ? f.getFile() : "")
+                .thenComparingInt(Finding::getStartLine));
+
+        FindingSeverity currentSeverity = null;
+        int sevIdx = 0;
+
+        for (Finding f : sorted) {
+            FindingSeverity s = f.getSeverity() != null ? f.getSeverity() : FindingSeverity.INFO;
+
+            // Severity section header
+            if (currentSeverity != s) {
+                currentSeverity = s;
+                sevIdx = 0;
+                String icon;
+                switch (s) {
+                    case BLOCKER: icon = "⛔ P0 阻断"; break;
+                    case HIGH: icon = "⚠ P1 高危"; break;
+                    case MEDIUM: icon = "🔵 P2 中危"; break;
+                    default: icon = "P" + (s.ordinal() + 1) + " " + s.getLabel();
+                }
+                long count = countBySeverity(sorted, s);
+                sb.append("### ").append(icon).append("（").append(count).append(" 个）\n\n");
+            }
+            sevIdx++;
+
+            // P3/P4: collapsed one-line display
+            if (s.ordinal() >= FindingSeverity.LOW.ordinal()) {
+                sb.append("- **").append(s.getLevel()).append("-").append(sevIdx).append("** `")
+                        .append(f.getFile() != null ? f.getFile() : "-").append("`")
+                        .append(" 第").append(f.getStartLine()).append("-").append(f.getEndLine()).append("行")
+                        .append(" — ").append(f.getCategory() != null ? f.getCategory().getLabel() : "其他");
+                if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
+                    sb.append(": ").append(truncateLine(f.getEvidence(), 60));
+                }
+                sb.append("\n");
+                continue;
+            }
+
+            // P0/P1/P2: full detail
+            sb.append("---\n\n");
+
+            // Title line
+            String codeLink = buildCodeLink(context.getGitRemoteUrl(), context.getBranch(),
+                    f.getFile(), f.getStartLine(), f.getEndLine());
+            String categoryLabel = f.getCategory() != null ? f.getCategory().getLabel() : "其他";
+            sb.append("**").append(s.getLevel()).append("-").append(sevIdx).append("** ");
+            if (codeLink != null) {
+                sb.append("[").append(f.getFile()).append(" 第").append(f.getStartLine())
+                        .append("-").append(f.getEndLine()).append("行](").append(codeLink).append(")");
+            } else {
+                sb.append("`").append(f.getFile()).append("` 第").append(f.getStartLine())
+                        .append("-").append(f.getEndLine()).append("行");
+            }
+            sb.append(" — ").append(categoryLabel).append("\n\n");
+
+            // Metadata table
+            String handler = f.getCandidateHandler() != null && !f.getCandidateHandler().isEmpty()
+                    ? f.getCandidateHandler() : "待指派";
+            String reviewer = f.getReviewer() != null ? f.getReviewer() + " ✓" : "-";
+            String deadline = computeDeadline(f.getSeverity(), context.getReviewDate());
+            String confPct = String.format("%.0f%%", f.getConfidence() * 100);
+            String statusLabel = f.getStatus() != null ? f.getStatus().getLabel() : "未复核";
+
+            sb.append("| 项目 | 内容 |\n");
+            sb.append("|------|------|\n");
+            sb.append("| **严重度** | ").append(s.getLevel()).append(" ").append(s.getLabel()).append(" |\n");
+            sb.append("| **分类** | ").append(categoryLabel).append(" |\n");
+            sb.append("| **置信度** | ").append(confPct).append(" |\n");
+            sb.append("| **状态** | ").append(statusLabel).append(" |\n");
+            sb.append("| **候选处理人** | ").append(handler).append(" |\n");
+            sb.append("| **复核人** | ").append(reviewer).append(" |\n");
+            sb.append("| **截止时间** | ").append(deadline).append(" |\n\n");
+
+            // Evidence
+            if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
+                sb.append("> **证据：**\n> ```\n> ")
+                        .append(f.getEvidence().replace("\n", "\n> ")).append("\n> ```\n\n");
+            }
+
+            // Trigger
+            if (f.getTrigger() != null && !f.getTrigger().isEmpty()) {
+                sb.append("> **触发条件：** ").append(f.getTrigger()).append("\n\n");
+            }
+
+            // Suggested fix
+            if (f.getSuggestedFix() != null && !f.getSuggestedFix().isEmpty()) {
+                sb.append("> **建议修复：**\n> ```diff\n> ")
+                        .append(f.getSuggestedFix().replace("\n", "\n> ")).append("\n> ```\n\n");
+            }
+        }
+    }
+
+    // ================================================================
+    // Phase 8 工具方法
+    // ================================================================
+
+    /**
+     * 生成代码链接，根据 git remote URL 判断平台类型。
+     */
+    String buildCodeLink(String gitRemoteUrl, String branch, String filePath,
+                         int startLine, int endLine) {
+        if (gitRemoteUrl == null || branch == null || filePath == null) return null;
+
+        // 标准化 URL：去掉 .git 后缀和协议前缀
+        String url = gitRemoteUrl.replaceAll("\\.git$", "");
+        url = url.replaceAll("^https?://", "").replaceAll("^git@", "").replace(":", "/");
+
+        String host = url.contains("/") ? url.substring(0, url.indexOf('/')).toLowerCase() : url;
+        String projectPath = url.contains("/") ? url.substring(url.indexOf('/') + 1) : "";
+
+        String blobFormat;
+        if (host.contains("github.com") || host.contains("gitee.com")) {
+            blobFormat = "https://" + host + "/" + projectPath + "/blob/" + branch + "/" + filePath;
+        } else {
+            // GitLab（包括私有部署）使用 /-/blob/
+            blobFormat = "https://" + host + "/" + projectPath + "/-/blob/" + branch + "/" + filePath;
+        }
+
+        return blobFormat + "#L" + startLine + (endLine > startLine ? "-L" + endLine : "");
+    }
+
+    /** 计算截止时间：P0="立即", P1=审查日期+3工作日, P2=审查日期+7工作日 */
+    String computeDeadline(FindingSeverity severity, Date reviewDate) {
+        if (severity == FindingSeverity.BLOCKER) return "立即";
+        if (reviewDate == null) return "-";
+
+        int days;
+        if (severity == FindingSeverity.HIGH) days = 3;
+        else if (severity == FindingSeverity.MEDIUM) days = 7;
+        else return "-";
+
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(reviewDate);
+        int added = 0;
+        while (added < days) {
+            cal.add(Calendar.DAY_OF_MONTH, 1);
+            int dow = cal.get(Calendar.DAY_OF_WEEK);
+            if (dow != Calendar.SATURDAY && dow != Calendar.SUNDAY) {
+                added++;
+            }
+        }
+        return new SimpleDateFormat("yyyy-MM-dd").format(cal.getTime());
+    }
+
+    private long countBySeverity(List<Finding> findings, FindingSeverity severity) {
+        return findings.stream().filter(f -> f.getSeverity() == severity).count();
+    }
+
+    private long countConfirmed(List<Finding> findings, FindingSeverity severity) {
+        return findings.stream()
+                .filter(f -> f.getSeverity() == severity && f.getStatus() == FindingStatus.CONFIRMED)
+                .count();
+    }
+
+    private String truncateLine(String text, int maxLen) {
+        if (text == null) return "";
+        String trimmed = text.replace("\n", " ").trim();
+        if (trimmed.length() <= maxLen) return trimmed;
+        return trimmed.substring(0, maxLen) + "...";
     }
 
     private String generateFindingsHtml(CodeReviewResult result, CodeReviewContext context) {
-        // HTML 版本暂用 markdown 内容包裹
         String md = generateFindingsMarkdown(result, context);
         StringBuilder html = new StringBuilder();
         html.append("<!DOCTYPE html><html><head><meta charset=\"UTF-8\">");

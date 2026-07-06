@@ -36,6 +36,13 @@ public class EfficiencyReportGenerator {
         sb.append("*分析模式*: Bug修复溯源（AI 提交分类 + git blame）\n");
         sb.append("*分析耗时*: ").append(result.getAnalysisTimeMs()).append("ms\n\n");
 
+        // Phase 8: 数据局限性注释
+        sb.append("> **注意**：\n");
+        sb.append("> - git blame 关联仅表示修复涉及的历史代码行由对应开发者编写，不一定意味着该开发者直接引入了 bug。\n");
+        sb.append("> - 低贡献率仅反映本次统计范围内的提交数量，不代表开发者在其他方面的投入（如代码审查、设计讨论、技术文档等）。\n");
+        sb.append("> - 只有经两个 LLM 交叉验证（分类 LLM + review LLM 置信度平均 ≥ 0.7）的条目才标记为\"已确认\"。\n");
+        sb.append("> - 未修复漏洞的引入者信息同样来自 git blame，已通过 review LLM 交叉验证，但最终判定仍需人工复核。\n\n");
+
         List<DeveloperEfficiency> devs = result.getDeveloperEfficiencies();
         if (devs == null || devs.isEmpty()) {
             sb.append("*未检测到 Bug 修复提交，无法生成效率分析*\n\n");
@@ -54,8 +61,8 @@ public class EfficiencyReportGenerator {
         // Phase 7.6: Developer composite portrait
         generateDeveloperCompositePortrait(sb, devs, result);
 
-        // Section 3: Key observations
-        generateKeyObservations(sb, result, devs);
+        // Section 3: Collaboration signals (formerly key observations)
+        generateCollaborationSignals(sb, result, devs);
 
         return sb.toString();
     }
@@ -304,57 +311,74 @@ public class EfficiencyReportGenerator {
     }
 
     /**
-     * 关键观察。
+     * Phase 8: 协作信号 — 仅列数据事实，不做人格推断。
+     *
+     * <p>禁止的表述：质量意识、水平、能力、态度、努力、优秀、差、最好、最差。</p>
      */
-    private void generateKeyObservations(StringBuilder sb, EfficiencyAnalysisResult result,
-                                          List<DeveloperEfficiency> devs) {
-        sb.append("### 关键观察\n\n");
+    private void generateCollaborationSignals(StringBuilder sb, EfficiencyAnalysisResult result,
+                                              List<DeveloperEfficiency> devs) {
+        sb.append("### 协作信号\n\n");
 
-        List<String> observations = new ArrayList<>();
+        List<String> signals = new ArrayList<>();
 
-        // Highest bug rate
-        DeveloperEfficiency highestBugRate = devs.stream()
-                .filter(d -> d.getBugRate() > 0)
-                .max(Comparator.comparingDouble(DeveloperEfficiency::getBugRate))
-                .orElse(null);
-        if (highestBugRate != null) {
-            observations.add("Bug 率最高: **" + highestBugRate.getAuthorName() + "** (" +
-                    String.format("%.1f%%", highestBugRate.getBugRate() * 100) + ")");
+        // Developers with confirmed bug associations
+        for (DeveloperEfficiency dev : devs) {
+            int confirmed = dev.getConfirmedCount();
+            int total = dev.getBugDetails().size();
+            double rate = dev.getTotalCommits() > 0
+                    ? (double) total / dev.getTotalCommits() * 100 : 0;
+
+            if (total > 0) {
+                if (confirmed > 0) {
+                    signals.add(dev.getAuthorName() + " 有 " + String.format("%.1f%%", rate)
+                            + " 的 commit 被后续修复关联（已确认 " + confirmed + " 个，误报 "
+                            + dev.getFalsePositiveCount() + " 个）");
+                } else if (dev.getFalsePositiveCount() > 0) {
+                    signals.add(dev.getAuthorName() + " 有 " + total
+                            + " 个 commit 被后续修复关联（全部为误报）");
+                } else {
+                    signals.add("本次分析范围内，" + dev.getAuthorName() + " 有 " + total
+                            + " 个 commit 被后续修复关联");
+                }
+            }
         }
 
-        // Most fixes
-        DeveloperEfficiency mostFixes = devs.stream()
-                .max(Comparator.comparingInt(DeveloperEfficiency::getFixesMade))
-                .orElse(null);
-        if (mostFixes != null && mostFixes.getFixesMade() > 0) {
-            observations.add("修复最多: **" + mostFixes.getAuthorName() + "** (" +
-                    mostFixes.getFixesMade() + " 次)");
+        // Fix contributors
+        for (DeveloperEfficiency dev : devs) {
+            if (dev.getFixesMade() > 0) {
+                signals.add(dev.getAuthorName() + " 本次提交了 " + dev.getFixesMade() + " 个修复类 commit");
+            }
         }
 
-        // Most bugs introduced
-        DeveloperEfficiency mostBugs = devs.stream()
-                .max(Comparator.comparingDouble(DeveloperEfficiency::getBugsIntroduced))
-                .orElse(null);
-        if (mostBugs != null && mostBugs.getBugsIntroduced() > 0) {
-            observations.add("产生 bug 最多: **" + mostBugs.getAuthorName() + "** (" +
-                    String.format("%.2f", mostBugs.getBugsIntroduced()) + " 个，建议加强代码审查)");
+        // Overall stats
+        int totalFixCommits = result.getTotalFixCommits();
+        int totalBugDetails = result.getAllBugDetails() != null ? result.getAllBugDetails().size() : 0;
+        long confirmedTotal = devs.stream().mapToInt(DeveloperEfficiency::getConfirmedCount).sum();
+        long falsePositiveTotal = devs.stream().mapToInt(DeveloperEfficiency::getFalsePositiveCount).sum();
+        signals.add("共 " + totalFixCommits + " 个 fix commit，对应 " + totalBugDetails + " 条 blame 关联记录");
+        signals.add("经双 LLM 交叉验证：已确认 " + confirmedTotal + " 个，误报 " + falsePositiveTotal + " 个");
+
+        // Unremediated vulnerabilities
+        List<Finding> findings = result.getFindings();
+        if (findings != null && !findings.isEmpty()) {
+            long p0p1 = findings.stream()
+                    .filter(f -> f.getSeverity() == FindingSeverity.BLOCKER
+                            || f.getSeverity() == FindingSeverity.HIGH)
+                    .count();
+            long files = findings.stream()
+                    .map(Finding::getFile)
+                    .filter(Objects::nonNull).distinct().count();
+            if (p0p1 > 0) {
+                signals.add("审查发现 " + p0p1 + " 个 P0/P1 未修复漏洞，涉及 " + files + " 个文件");
+            }
         }
 
-        // Summary
-        observations.add("共 " + (result.getTotalFixCommits() > 0 ? result.getTotalFixCommits() + " 个" : "无")
-                + " fix commit，追溯到 " + result.getAllBugDetails().size() + " 个 bug 归属记录");
-
-        // Average bug rate
-        double avg = devs.stream()
-                .filter(d -> d.getBugRate() > 0)
-                .mapToDouble(DeveloperEfficiency::getBugRate)
-                .average().orElse(0);
-        if (avg > 0) {
-            observations.add("平均 bug 率: " + String.format("%.1f%%", avg * 100));
+        for (String signal : signals) {
+            sb.append("- ").append(signal).append("\n");
         }
 
-        for (String obs : observations) {
-            sb.append("- ").append(obs).append("\n");
+        if (signals.isEmpty()) {
+            sb.append("- 本次分析范围未发现需要特别关注的协作信号\n");
         }
         sb.append("\n");
     }
