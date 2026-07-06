@@ -77,9 +77,13 @@ public class FindingVerifier {
         // 校验 4: 触发条件完整性
         for (Finding f : afterDedup) {
             Finding current = f;
-            current = checkFalsePositive(current);
-            current = checkTriggerCompleteness(current);
-            result.accept(current);
+            boolean falsePositive = checkFalsePositive(current);
+            boolean triggerDowngraded = checkTriggerCompleteness(current);
+            if (falsePositive || triggerDowngraded) {
+                result.downgrade(current);
+            } else {
+                result.accept(current);
+            }
         }
 
         log.info("FindingVerifier: {} → accepted: {}, rejected: {}, downgraded: {}",
@@ -203,23 +207,29 @@ public class FindingVerifier {
         // confidence 取最大值
         merged.setConfidence(Math.max(a.getConfidence(), b.getConfidence()));
 
-        // status: 有一个 CONFIRMED 就保留 CONFIRMED
-        merged.setStatus(
-                a.getStatus() == FindingStatus.CONFIRMED || b.getStatus() == FindingStatus.CONFIRMED
-                        ? FindingStatus.CONFIRMED : FindingStatus.UNREVIEWED);
+        // status: CONFIRMED > FALSE_POSITIVE > UNREVIEWED
+        if (a.getStatus() == FindingStatus.CONFIRMED || b.getStatus() == FindingStatus.CONFIRMED) {
+            merged.setStatus(FindingStatus.CONFIRMED);
+        } else if (a.getStatus() == FindingStatus.FALSE_POSITIVE || b.getStatus() == FindingStatus.FALSE_POSITIVE) {
+            merged.setStatus(FindingStatus.FALSE_POSITIVE);
+        } else {
+            merged.setStatus(FindingStatus.UNREVIEWED);
+        }
 
         // 文本字段去重拼接
         merged.setEvidence(mergeText(a.getEvidence(), b.getEvidence()));
         merged.setSuggestedFix(mergeText(a.getSuggestedFix(), b.getSuggestedFix()));
         merged.setTrigger(mergeText(a.getTrigger(), b.getTrigger()));
+        merged.setReviewConclusion(mergeText(a.getReviewConclusion(), b.getReviewConclusion()));
 
-        // blame 字段取 a（先出现的，Phase 5 填充）
-        merged.setOwner(a.getOwner());
-        merged.setOwnerEmail(a.getOwnerEmail());
-        merged.setBlameCommitIds(a.getBlameCommitIds());
-        merged.setCandidateHandler(a.getCandidateHandler());
-        merged.setReviewer(a.getReviewer());
-        merged.setModuleName(a.getModuleName());
+        // blame 字段合并（Phase 5 填充）
+        merged.setOwner(mergeText(a.getOwner(), b.getOwner()));
+        merged.setOwnerEmail(mergeText(a.getOwnerEmail(), b.getOwnerEmail()));
+        merged.setBlameCommitIds(mergeLists(a.getBlameCommitIds(), b.getBlameCommitIds()));
+        merged.setCandidateHandler(mergeText(a.getCandidateHandler(), b.getCandidateHandler()));
+        // TODO Phase 5: blameDetails (Map<String, BlameShare>) 合并 —— a 优先，同 key 用 a
+        merged.setReviewer(a.getReviewer());         // Phase 6 填充，取先出现的
+        merged.setModuleName(a.getModuleName());     // Phase 4 填充，同组内一定相同
 
         return merged;
     }
@@ -233,6 +243,19 @@ public class FindingVerifier {
         return a + "\n---\n" + b;
     }
 
+    /** 合并两个列表，去重，a 优先 */
+    private List<String> mergeLists(List<String> a, List<String> b) {
+        List<String> result = new ArrayList<>(a);
+        if (b != null) {
+            for (String item : b) {
+                if (!result.contains(item)) {
+                    result.add(item);
+                }
+            }
+        }
+        return result;
+    }
+
     // ================================================================
     // 校验 3: 误报检测
     // ================================================================
@@ -241,10 +264,12 @@ public class FindingVerifier {
      * evidence 中已包含防护模式，且 confidence < 0.8 → 降级为 P3，标记 FALSE_POSITIVE。
      *
      * <p>检测 5 种防护模式：try-catch / @Valid / if-null-throw / Optional.orElseThrow / Objects.requireNonNull</p>
+     *
+     * @return true 如果该 Finding 被降级
      */
-    Finding checkFalsePositive(Finding f) {
+    boolean checkFalsePositive(Finding f) {
         String evidence = f.getEvidence();
-        if (evidence == null || evidence.isEmpty()) return f;
+        if (evidence == null || evidence.isEmpty()) return false;
 
         boolean hasProtection = false;
         // try-catch
@@ -263,8 +288,9 @@ public class FindingVerifier {
                     f.getFile(), f.getStartLine(), f.getEndLine(), f.getConfidence());
             f.setSeverity(FindingSeverity.LOW);           // P3
             f.setStatus(FindingStatus.FALSE_POSITIVE);
+            return true;
         }
-        return f;
+        return false;
     }
 
     // ================================================================
@@ -274,17 +300,20 @@ public class FindingVerifier {
     /**
      * P0/P1 问题缺少 trigger → 降级为 P2。
      * 确保高危问题都有可复现的场景描述。
+     *
+     * @return true 如果该 Finding 被降级
      */
-    Finding checkTriggerCompleteness(Finding f) {
-        if (!isHighSeverity(f.getSeverity())) return f;
+    boolean checkTriggerCompleteness(Finding f) {
+        if (!isHighSeverity(f.getSeverity())) return false;
 
         String trigger = f.getTrigger();
         if (trigger == null || trigger.trim().isEmpty()) {
             log.info("P0/P1 missing trigger: file={}, lines={}-{} → downgrading to P2",
                     f.getFile(), f.getStartLine(), f.getEndLine());
             f.setSeverity(FindingSeverity.MEDIUM);         // P2
+            return true;
         }
-        return f;
+        return false;
     }
 
     private boolean isHighSeverity(FindingSeverity s) {

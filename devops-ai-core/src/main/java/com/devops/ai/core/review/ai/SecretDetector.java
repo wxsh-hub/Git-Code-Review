@@ -46,6 +46,13 @@ public class SecretDetector {
             this.description = description;
             this.enabled = true;
         }
+
+        Rule(String name, String regex, int flags, String description) {
+            this.name = name;
+            this.pattern = Pattern.compile(regex, flags);
+            this.description = description;
+            this.enabled = true;
+        }
     }
 
     private final List<Rule> rules = new ArrayList<>();
@@ -101,14 +108,19 @@ public class SecretDetector {
                 "\\bpassword\\s*=\\s*\"([^\"]+)\"",
                 "通用明文密码赋值");
 
-        // 11. PEM 私钥
+        // 11. PEM 私钥（DOTALL 匹配完整 PEM 块，包括密钥体）
         addRule("private_key",
-                "-----BEGIN\\s*(RSA |EC |DSA |OPENSSH |)PRIVATE KEY-----",
+                "-----BEGIN\\s*(RSA |EC |DSA |OPENSSH |)PRIVATE KEY-----.*?-----END\\s*\\1?PRIVATE KEY-----",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL,
                 "代码中包含 PEM 格式私钥");
     }
 
     private void addRule(String name, String regex, String description) {
         rules.add(new Rule(name, regex, description));
+    }
+
+    private void addRule(String name, String regex, int flags, String description) {
+        rules.add(new Rule(name, regex, flags, description));
     }
 
     // ================================================================
@@ -137,7 +149,6 @@ public class SecretDetector {
 
     /** 禁用所有规则，然后手动启用需要的（适合最小化检测场景） */
     public void disableAll() {
-        for (Rule r : rules) rules.removeIf(rule -> !rule.enabled);  // no — just set all to false
         for (Rule r : rules) r.enabled = false;
     }
 
@@ -169,16 +180,17 @@ public class SecretDetector {
         List<Finding> newFindings = new ArrayList<>();
 
         for (Finding f : findings) {
-            // Step 1: Phase 1 基础脱敏
-            f.sanitize();
-
-            // Step 2: 对三个文本字段做 11 条规则增强检测
+            // Step 1: 先用 11 条规则扫描原始文本（必须脱敏前做，否则 *** 不满足长度要求）
             List<SecretMatch> allMatches = new ArrayList<>();
             allMatches.addAll(scanField(f.getEvidence(), "evidence"));
             allMatches.addAll(scanField(f.getTrigger(), "trigger"));
             allMatches.addAll(scanField(f.getSuggestedFix(), "suggestedFix"));
+            allMatches.addAll(scanField(f.getReviewConclusion(), "reviewConclusion"));
 
-            // Step 3: 对文本字段做替换
+            // Step 2: Phase 1 基础脱敏（8 种 pattern）
+            f.sanitize();
+
+            // Step 3: Phase 3 增强脱敏（11 条规则，覆盖 reviewConclusion）
             if (f.getEvidence() != null) {
                 f.setEvidence(sanitize(f.getEvidence()));
             }
@@ -187,6 +199,9 @@ public class SecretDetector {
             }
             if (f.getSuggestedFix() != null) {
                 f.setSuggestedFix(sanitize(f.getSuggestedFix()));
+            }
+            if (f.getReviewConclusion() != null) {
+                f.setReviewConclusion(sanitize(f.getReviewConclusion()));
             }
 
             // Step 4: 为命中规则创建 SECRET_EXPOSURE Finding
@@ -266,11 +281,15 @@ public class SecretDetector {
     /** 构建替换文本：保留前缀，凭据值替换为 *** */
     private String buildReplacement(Matcher m) {
         String matched = m.group();
-        // 私钥块特殊处理：整段替换
+        // 私钥块特殊处理：正则已匹配完整 PEM 块（含 body + END 行），整体替换
         if (matched.startsWith("-----BEGIN")) {
-            return matched.substring(0, matched.indexOf('\n') > 0
-                    ? matched.indexOf('\n') : matched.length())
-                    + "\n***[PRIVATE KEY REDACTED]***\n-----END PRIVATE KEY-----";
+            int firstNL = matched.indexOf('\n');
+            String beginLine = matched.substring(0, firstNL > 0 ? firstNL : matched.length());
+            String keyType = beginLine
+                    .replace("-----BEGIN ", "")
+                    .replace("-----", "")
+                    .trim();
+            return beginLine + "\n***[PRIVATE KEY REDACTED]***\n-----END " + keyType + "-----";
         }
 
         // URL password 参数: 保留前缀 + ***

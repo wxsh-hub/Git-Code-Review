@@ -344,6 +344,9 @@ public class GenerationOrchestrator {
                         reviewContext.setCommits(commits);
                         reviewContext.setFileDiffs(diffs);
                         reviewContext.setGraphAnalysisJson(graphJson);
+                        reviewContext.setRepoPath(repoPath);  // 传给 OCR MCP server
+                        reviewContext.setSinceHash(reviewSinceHash);   // 用于 code_review_diff
+                        reviewContext.setUntilHash(reviewUntilHash);   // 用于 code_review_diff
 
                         CodeReviewResult reviewResult = codeReviewAiService.review(reviewContext);
 
@@ -565,8 +568,10 @@ public class GenerationOrchestrator {
             stats.setCategoryDistribution(catDist);
             stats.setCommitFrequency(sortedFrequency);
 
-            // Low-frequency flag and commit details
-            boolean lowFreq = pct < 10.0;
+            // Low-frequency flag: relative threshold (avg share × 25%), configurable
+            double avgShare = 100.0 / result.size();  // 平均每人占比
+            double threshold = avgShare * 0.25;        // Phase 7 相对阈值
+            boolean lowFreq = pct < threshold;
             stats.setLowFrequency(lowFreq);
             if (lowFreq) {
                 List<ContributorStats.CommitDetail> details = new ArrayList<>();
