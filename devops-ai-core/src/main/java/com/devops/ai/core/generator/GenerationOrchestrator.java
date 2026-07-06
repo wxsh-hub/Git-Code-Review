@@ -650,8 +650,9 @@ public class GenerationOrchestrator {
             stats.setCommitFrequency(sortedFrequency);
 
             // Low-frequency flag: relative threshold (avg share × 25%), configurable
-            double avgShare = 100.0 / result.size();  // 平均每人占比
-            double threshold = avgShare * 0.25;        // Phase 7 相对阈值
+            // Use authorCategoryMap.size() NOT result.size() — result is being built here
+            double avgShare = 100.0 / authorCategoryMap.size();  // 平均每人占比
+            double threshold = avgShare * 0.25;                  // Phase 7 相对阈值
             boolean lowFreq = pct < threshold;
             stats.setLowFrequency(lowFreq);
             if (lowFreq) {
