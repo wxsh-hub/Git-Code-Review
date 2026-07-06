@@ -63,15 +63,17 @@ public class DeveloperEfficiencyService {
      *
      * @param allCommits 所有 commit
      * @param categories AI 分类结果（包含 "Bug修复" category）
+     * @param findings   代码审查发现的 Finding 列表（Phase 7 跨管线传递，可为 null）
      * @param config     项目配置
      * @return Markdown 格式的分析报告段落
      */
     public String analyzeAndGenerateReport(List<Commit> allCommits,
                                             List<Category> categories,
+                                            java.util.List<com.devops.ai.core.review.model.Finding> findings,
                                             ProjectConfig config,
                                             String sinceHash,
                                             String untilHash) {
-        EfficiencyAnalysisResult result = analyzeFixes(allCommits, categories, config, sinceHash, untilHash);
+        EfficiencyAnalysisResult result = analyzeFixes(allCommits, categories, findings, config, sinceHash, untilHash);
         return reportGenerator.generate(result);
     }
 
@@ -80,6 +82,7 @@ public class DeveloperEfficiencyService {
      */
     public EfficiencyAnalysisResult analyzeFixes(List<Commit> allCommits,
                                                   List<Category> categories,
+                                                  java.util.List<com.devops.ai.core.review.model.Finding> findings,
                                                   ProjectConfig config,
                                                   String sinceHash,
                                                   String untilHash) {
@@ -95,6 +98,7 @@ public class DeveloperEfficiencyService {
             log.warn("No 'Bug修复' commits found in AI classification results");
             result.setAnalysisTimeMs(System.currentTimeMillis() - startTime);
             result.setDeveloperEfficiencies(buildEmptyEfficiencies(allCommits));
+            if (findings != null) result.setFindings(findings);
             return result;
         }
         log.info("Found {} 'Bug修复' commits from AI classification", fixCommits.size());
@@ -125,6 +129,11 @@ public class DeveloperEfficiencyService {
         }
 
         result.setAllBugDetails(allBugDetails);
+
+        // Phase 7: pass code review findings for unremediated vulnerability section
+        if (findings != null) {
+            result.setFindings(findings);
+        }
 
         // Aggregate per-developer metrics
         Map<String, DeveloperEfficiency> devMap = aggregateFromBugs(allCommits, allBugDetails, fixCommits);
@@ -463,6 +472,17 @@ public class DeveloperEfficiencyService {
             });
             dev.setBugsIntroduced(dev.getBugsIntroduced() + bug.getShare());
             dev.getBugDetails().add(bug);
+
+            // Phase 7: count CONFIRMED vs false positive
+            if (bug.isConfirmed()) {
+                dev.setConfirmedCount(dev.getConfirmedCount() + 1);
+            } else if ("FALSE_POSITIVE".equals(bug.getAttributionStatus())) {
+                dev.setFalsePositiveCount(dev.getFalsePositiveCount() + 1);
+            } else {
+                // attributionStatus not yet set (Phase 6 not applied to bug details)
+                // 默认视为已确认
+                dev.setConfirmedCount(dev.getConfirmedCount() + 1);
+            }
 
             // Fix for fixer — deduplicate by fixCommitId only:
             // one fix commit = one fix action, even if it fixes multiple bug-introducing commits.

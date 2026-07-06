@@ -18,6 +18,7 @@ import com.devops.ai.core.review.model.ReviewScope;
 import com.devops.ai.core.review.model.CodeReviewGraph;
 import com.devops.ai.core.review.model.CodeReviewResult;
 import com.devops.ai.core.review.model.FileDiff;
+import com.devops.ai.core.review.model.Finding;
 import com.devops.ai.core.review.report.ReviewReportGenerator;
 import com.devops.ai.core.efficiency.DeveloperEfficiencyService;
 import com.devops.ai.infrastructure.entity.GenerationLog;
@@ -300,6 +301,9 @@ public class GenerationOrchestrator {
 
         DocumentResult result = documentGenerator.generate(request);
 
+        // Phase 7: reviewResult needs broader scope for cross-pipeline data sharing
+        CodeReviewResult reviewResult = null;
+
         if (result.isSuccess() && request.isUseCodeReview()) {
             try {
                 ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
@@ -401,7 +405,7 @@ public class GenerationOrchestrator {
                                 reviewContext.getGitRemoteUrl() != null
                                         ? reviewContext.getGitRemoteUrl() : "null");
 
-                        CodeReviewResult reviewResult = codeReviewAiService.review(reviewContext);
+                        reviewResult = codeReviewAiService.review(reviewContext);
 
                         String reviewFormat = request.getReviewFormat() != null ? request.getReviewFormat() : "markdown";
                         String reviewContent = reviewReportGenerator.generate(reviewResult, reviewContext, reviewFormat);
@@ -445,11 +449,12 @@ public class GenerationOrchestrator {
                         }
                     }
                     if (reviewSinceHash != null && reviewUntilHash != null) {
-                        log.info("Starting developer efficiency analysis (v2 blame): sinceHash={}, untilHash={}",
+                        log.info("Starting efficiency analysis (v2 blame + Phase 7 findings): sinceHash={}, untilHash={}",
                                 reviewSinceHash.substring(0, Math.min(8, reviewSinceHash.length())),
                                 reviewUntilHash.substring(0, Math.min(8, reviewUntilHash.length())));
+                        List<Finding> findings = reviewResult != null ? reviewResult.getFindings() : null;
                         String efficiencySection = developerEfficiencyService.analyzeAndGenerateReport(
-                                commits, request.getCategories(), projectConfig, reviewSinceHash, reviewUntilHash);
+                                commits, request.getCategories(), findings, projectConfig, reviewSinceHash, reviewUntilHash);
                         if (efficiencySection != null && !efficiencySection.isEmpty()) {
                             String reviewContent = result.getReviewContent();
                             if (reviewContent != null && !reviewContent.isEmpty()) {
@@ -597,13 +602,13 @@ public class GenerationOrchestrator {
                 catDist.put(ce.getKey(), ce.getValue().size());
             }
 
-            // Commit frequency timeline by date
+            // Commit frequency timeline by month (Phase 7: monthly aggregation)
             Map<String, Integer> frequency = new LinkedHashMap<>();
             for (List<Commit> commits : catMap.values()) {
                 for (Commit c : commits) {
                     if (c.getCreatedAt() != null) {
-                        String day = new SimpleDateFormat("yyyy-MM-dd").format(c.getCreatedAt());
-                        frequency.merge(day, 1, Integer::sum);
+                        String month = new SimpleDateFormat("yyyy-MM").format(c.getCreatedAt());
+                        frequency.merge(month, 1, Integer::sum);
                     }
                 }
             }

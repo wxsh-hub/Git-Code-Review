@@ -24,6 +24,12 @@ public class DeveloperEfficiency {
     /** bug 率 = bugsIntroduced / totalCommits（可能 > 1.0） */
     private double bugRate;
 
+    // --- Phase 7: CONFIRMED 计数 ---
+    /** 已确认的 bug 引入数（双 LLM 置信度 ≥ 0.7） */
+    private int confirmedCount;
+    /** 误报数（双 LLM 置信度 < 0.7） */
+    private int falsePositiveCount;
+
     /** 引入的每个 bug 的详情 */
     private List<BugDetail> bugDetails = new ArrayList<>();
     /** 修复的每个 bug 的详情 */
@@ -156,6 +162,12 @@ public class DeveloperEfficiency {
 
     public double getBugRate() { return bugRate; }
     public void setBugRate(double bugRate) { this.bugRate = bugRate; }
+
+    // --- Phase 7 CONFIRMED counts ---
+    public int getConfirmedCount() { return confirmedCount; }
+    public void setConfirmedCount(int confirmedCount) { this.confirmedCount = confirmedCount; }
+    public int getFalsePositiveCount() { return falsePositiveCount; }
+    public void setFalsePositiveCount(int falsePositiveCount) { this.falsePositiveCount = falsePositiveCount; }
 
     public List<BugDetail> getBugDetails() { return bugDetails; }
     public void setBugDetails(List<BugDetail> bugDetails) { this.bugDetails = bugDetails; }

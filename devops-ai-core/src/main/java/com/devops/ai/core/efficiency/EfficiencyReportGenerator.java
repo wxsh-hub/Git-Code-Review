@@ -1,6 +1,9 @@
 package com.devops.ai.core.efficiency;
 
 import com.devops.ai.core.efficiency.model.*;
+import com.devops.ai.core.review.model.Finding;
+import com.devops.ai.core.review.model.FindingSeverity;
+import com.devops.ai.core.review.model.FindingStatus;
 import org.springframework.stereotype.Component;
 
 import java.text.SimpleDateFormat;
@@ -45,6 +48,12 @@ public class EfficiencyReportGenerator {
         // Section 2: Summary tables
         generateSummaryTables(sb, devs);
 
+        // Phase 7.6: Unremediated vulnerabilities from code review
+        generateUnremediatedVulnerabilities(sb, result);
+
+        // Phase 7.6: Developer composite portrait
+        generateDeveloperCompositePortrait(sb, devs, result);
+
         // Section 3: Key observations
         generateKeyObservations(sb, result, devs);
 
@@ -79,13 +88,17 @@ public class EfficiencyReportGenerator {
             // Bug introduction table
             if (!bugDetails.isEmpty()) {
                 sb.append("##### 引入的 Bug\n\n");
-                sb.append("| # | 问题提交 | 时间 | 引入描述 | 修复描述 | 文件 | 份额 | 修复人 | 修复提交 |\n");
-                sb.append("|---|---------|------|---------|---------|------|------|--------|--------|\n");
+                sb.append("| # | 问题提交 | 时间 | 引入描述 | 修复描述 | 文件 | 份额 | 修复人 | 置信度 | 状态 |\n");
+                sb.append("|---|---------|------|---------|---------|------|------|--------|--------|------|\n");
                 int idx = 1;
                 for (DeveloperEfficiency.BugDetail bug : bugDetails) {
                     String commitShort = bug.getCommitId() != null && bug.getCommitId().length() >= 8
                             ? bug.getCommitId().substring(0, 8) : (bug.getCommitId() != null ? bug.getCommitId() : "-");
-                    String fixCommitShort = formatMultiCommitIds(bug.getFixedCommitId());
+                    String conf = bug.getReviewerConfidence() > 0
+                            ? String.format("%.0f%%", bug.getReviewerConfidence() * 100)
+                            : "-";
+                    String statusLabel = bug.isConfirmed() ? "已确认"
+                            : "FALSE_POSITIVE".equals(bug.getAttributionStatus()) ? "误报" : "待验证";
                     sb.append("| ").append(idx++).append(" | ")
                             .append(commitShort).append(" | ")
                             .append(bug.getCreatedAt() != null && !bug.getCreatedAt().isEmpty() ? bug.getCreatedAt() : "-").append(" | ")
@@ -94,7 +107,8 @@ public class EfficiencyReportGenerator {
                             .append(truncateFilePath(bug.getFilePath(), 40)).append(" | ")
                             .append(String.format("%.2f", bug.getShare())).append(" | ")
                             .append(bug.getFixedBy() != null ? bug.getFixedBy() : "-").append(" | ")
-                            .append(fixCommitShort).append(" |\n");
+                            .append(conf).append(" | ")
+                            .append(statusLabel).append(" |\n");
                 }
                 sb.append("\n");
             }
@@ -129,9 +143,9 @@ public class EfficiencyReportGenerator {
         sb.append("### 汇总表\n\n");
 
         // Bug introduction ranking (sorted by bugsIntroduced descending)
-        sb.append("#### Bug 引入排名\n\n");
-        sb.append("| 排名 | 开发者 | 总提交 | 产生 Bug 数 | Bug 率 | 被修复次数 |\n");
-        sb.append("|------|--------|--------|------------|--------|----------|\n");
+        sb.append("#### Bug 引入排名（仅已确认）\n\n");
+        sb.append("| 排名 | 开发者 | 总提交 | 关联 Bug | 已确认 | 误报 |\n");
+        sb.append("|------|--------|--------|---------|--------|------|\n");
         int rank = 1;
         for (DeveloperEfficiency dev : devs) {
             if (dev.getBugsIntroduced() == 0 && dev.getBugDetails().isEmpty()) continue;
@@ -139,8 +153,8 @@ public class EfficiencyReportGenerator {
                     .append(dev.getAuthorName()).append(" | ")
                     .append(dev.getTotalCommits()).append(" | ")
                     .append(String.format("%.2f", dev.getBugsIntroduced())).append(" | ")
-                    .append(String.format("%.1f%%", dev.getBugRate() * 100)).append(" | ")
-                    .append(dev.getBugDetails().size()).append(" |\n");
+                    .append(dev.getConfirmedCount()).append(" | ")
+                    .append(dev.getFalsePositiveCount()).append(" |\n");
         }
         if (rank == 1) {
             sb.append("| - | *所有开发者均未引入 bug* | - | - | - | - |\n");
@@ -175,6 +189,116 @@ public class EfficiencyReportGenerator {
         }
         if (rank == 1) {
             sb.append("| - | *无人修复他人 bug* | - | - |\n");
+        }
+        sb.append("\n");
+    }
+
+    /**
+     * Phase 7.6: 未修复漏洞详情（代码审查发现）。
+     */
+    private void generateUnremediatedVulnerabilities(StringBuilder sb, EfficiencyAnalysisResult result) {
+        List<Finding> findings = result.getFindings();
+        if (findings == null || findings.isEmpty()) return;
+
+        sb.append("---\n\n");
+        sb.append("### 未修复漏洞详情（代码审查发现）\n\n");
+        sb.append("| # | 文件 | 行号 | 问题 | 严重度 | 引入者 | 引入 commit | 状态 |\n");
+        sb.append("|---|------|------|------|--------|--------|------------|------|\n");
+
+        int idx = 1;
+        for (Finding f : findings) {
+            if (f.getSeverity() == null) continue;
+            // 只展示 P0/P1 的未修复漏洞
+            if (f.getSeverity() != FindingSeverity.BLOCKER
+                    && f.getSeverity() != FindingSeverity.HIGH) continue;
+
+            String file = f.getFile() != null ? f.getFile() : "-";
+            String line = f.getStartLine() > 0 ? f.getStartLine() + "-" + f.getEndLine() : "-";
+            String desc = f.getEvidence() != null ? truncate(f.getEvidence(), 30) : "-";
+            String sev = f.getSeverity().getLevel();
+            String owner = f.getOwner() != null && !f.getOwner().isEmpty() ? f.getOwner() : "待指派";
+            String commits = f.getBlameCommitIds() != null && !f.getBlameCommitIds().isEmpty()
+                    ? String.join(", ", f.getBlameCommitIds().stream()
+                            .map(id -> id.length() >= 8 ? id.substring(0, 8) : id)
+                            .toArray(String[]::new))
+                    : "-";
+            String statusLabel = f.getStatus() != null
+                    ? f.getStatus().getLabel() : "-";
+
+            sb.append("| ").append(idx++).append(" | ")
+                    .append(file).append(" | ")
+                    .append(line).append(" | ")
+                    .append(desc).append(" | ")
+                    .append(sev).append(" | ")
+                    .append(owner).append(" | ")
+                    .append(commits).append(" | ")
+                    .append(statusLabel).append(" |\n");
+        }
+
+        if (idx == 1) {
+            sb.append("| - | *无 P0/P1 未修复漏洞* | - | - | - | - | - | - |\n");
+        }
+        sb.append("\n> 以上为代码审查发现但尚未修复的漏洞，建议推动相关开发者优先修复。\n\n");
+    }
+
+    /**
+     * Phase 7.6: 开发者综合画像（已修复 + 未修复 双维度）。
+     */
+    private void generateDeveloperCompositePortrait(StringBuilder sb, List<DeveloperEfficiency> devs,
+                                                     EfficiencyAnalysisResult result) {
+        List<Finding> findings = result.getFindings();
+        if (findings == null) findings = java.util.Collections.emptyList();
+
+        sb.append("### 开发者综合画像\n\n");
+        sb.append("| 开发者 | 已修复 bug 关联 | 未修复漏洞关联（已确认/总数） | 信号 |\n");
+        sb.append("|--------|----------------|---------------------------|------|\n");
+
+        // Collect per-developer unremediated vulnerability stats
+        Map<String, int[]> unremediatedByDev = new LinkedHashMap<>(); // [confirmed, total]
+        for (Finding f : findings) {
+            if (f.getOwner() == null || f.getOwner().isEmpty()) continue;
+            boolean confirmed = f.getStatus() == FindingStatus.CONFIRMED;
+            // owner format: "张三(50%), 李四(50%)" — split by ", "
+            String[] owners = f.getOwner().split(", ");
+            for (String o : owners) {
+                String name = o.replaceAll("\\(\\d+%\\)", "").trim();
+                int[] stats = unremediatedByDev.computeIfAbsent(name, k -> new int[]{0, 0});
+                stats[1]++; // total
+                if (confirmed) stats[0]++; // confirmed
+            }
+        }
+
+        for (DeveloperEfficiency dev : devs) {
+            String name = dev.getAuthorName();
+            String fixedInfo;
+            if (dev.getBugsIntroduced() > 0) {
+                fixedInfo = String.format("%.1f 个（已确认 %d）",
+                        dev.getBugsIntroduced(), dev.getConfirmedCount());
+            } else {
+                fixedInfo = "0 个";
+            }
+
+            int[] unremediated = unremediatedByDev.getOrDefault(name, new int[]{0, 0});
+            String unremediatedInfo;
+            if (unremediated[1] > 0) {
+                unremediatedInfo = unremediated[0] + "/" + unremediated[1] + " 个";
+            } else {
+                unremediatedInfo = "0 个";
+            }
+
+            String signal = "-";
+            if (unremediated[1] >= 5 && unremediated[0] >= 3) {
+                signal = "当前存在较多未修复漏洞";
+            } else if (unremediated[1] > 0 && dev.getConfirmedCount() > 0) {
+                signal = "有 " + dev.getConfirmedCount() + " 个已确认 bug + " + unremediated[1] + " 个待修复漏洞";
+            } else if (unremediated[1] > 0) {
+                signal = unremediated[1] + " 个待修复漏洞";
+            }
+
+            sb.append("| ").append(name).append(" | ")
+                    .append(fixedInfo).append(" | ")
+                    .append(unremediatedInfo).append(" | ")
+                    .append(signal).append(" |\n");
         }
         sb.append("\n");
     }

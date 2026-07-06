@@ -1,5 +1,7 @@
 package com.devops.ai.core.efficiency.model;
 
+import com.devops.ai.core.review.model.Finding;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,6 +29,10 @@ public class EfficiencyAnalysisResult {
     /** 生成的 Markdown 总结报告 */
     private String summaryReport;
 
+    // --- Phase 7: 代码审查发现的未修复漏洞 ---
+    /** 代码审查流水线产出的 Finding 列表（Phase 4-6 管线输出） */
+    private List<Finding> findings = new ArrayList<>();
+
     public String getProjectName() { return projectName; }
     public void setProjectName(String projectName) { this.projectName = projectName; }
 
@@ -50,4 +56,8 @@ public class EfficiencyAnalysisResult {
 
     public String getSummaryReport() { return summaryReport; }
     public void setSummaryReport(String summaryReport) { this.summaryReport = summaryReport; }
+
+    // --- Phase 7 findings ---
+    public List<Finding> getFindings() { return findings; }
+    public void setFindings(List<Finding> findings) { this.findings = findings; }
 }
