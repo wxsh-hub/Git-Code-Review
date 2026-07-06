@@ -89,7 +89,7 @@ public class ReviewLlmService {
         String provider = getReviewProvider();
         String model = getReviewModel();
         String apiKey = getApiKey();
-        String apiUrl = getApiUrl();
+        String apiUrl = getApiUrl(provider);
 
         if (apiKey.isEmpty()) {
             log.warn("API key not configured, skipping review LLM cross-validation");
@@ -250,8 +250,11 @@ public class ReviewLlmService {
             f.setSuggestedFix(output.suggestedFix);
         }
 
-        log.debug("Finding {} cross-validated: confidence {:.0%} → {:.0%}, status={}",
-                f.getId(), originalConfidence, finalConfidence, f.getStatus());
+        log.debug("Finding {} cross-validated: confidence {}% → {}%, status={}",
+                f.getId(),
+                String.format("%.0f", originalConfidence * 100),
+                String.format("%.0f", finalConfidence * 100),
+                f.getStatus());
     }
 
     // ================================================================
@@ -285,10 +288,9 @@ public class ReviewLlmService {
         }
     }
 
-    private String getApiUrl() {
+    private String getApiUrl(String provider) {
         String customUrl = readConfig("llm.apiUrl");
         if (customUrl != null && !customUrl.trim().isEmpty()) return customUrl.trim();
-        String provider = readConfig("llm.provider");
         if (provider == null || provider.isEmpty()) return "https://api.deepseek.com";
         switch (provider) {
             case "deepseek": return "https://api.deepseek.com";
