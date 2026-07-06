@@ -58,6 +58,14 @@ public class DeveloperEfficiency {
         /** 修复时间 */
         private String fixedAt;
 
+        // --- Phase 6: 双 LLM 交叉验证字段 ---
+        /** 归因状态（Phase 6 review LLM 判定） */
+        private String attributionStatus;  // "CONFIRMED" / "FALSE_POSITIVE"
+        /** review LLM 的复核结论 */
+        private String reviewConclusion;
+        /** review LLM 的置信度 */
+        private double reviewerConfidence;
+
         public String getCommitId() { return commitId; }
         public void setCommitId(String commitId) { this.commitId = commitId; }
         public String getCommitMessage() { return commitMessage; }
@@ -80,6 +88,18 @@ public class DeveloperEfficiency {
         public void setFixedMessage(String fixedMessage) { this.fixedMessage = fixedMessage; }
         public String getFixedAt() { return fixedAt; }
         public void setFixedAt(String fixedAt) { this.fixedAt = fixedAt; }
+
+        // --- Phase 6 getters/setters ---
+        public String getAttributionStatus() { return attributionStatus; }
+        public void setAttributionStatus(String attributionStatus) { this.attributionStatus = attributionStatus; }
+        public String getReviewConclusion() { return reviewConclusion; }
+        public void setReviewConclusion(String reviewConclusion) { this.reviewConclusion = reviewConclusion; }
+        public double getReviewerConfidence() { return reviewerConfidence; }
+        public void setReviewerConfidence(double reviewerConfidence) { this.reviewerConfidence = reviewerConfidence; }
+
+        public boolean isConfirmed() {
+            return "CONFIRMED".equals(attributionStatus);
+        }
     }
 
     /**

@@ -24,32 +24,58 @@ public class LlmClient {
     }
 
     public String call(String provider, String apiKey, String apiUrl, String model, String prompt) {
-        return call(provider, apiKey, apiUrl, model, prompt, 4096);
+        return call(provider, apiKey, apiUrl, model, null, prompt, 4096, 0.1);
     }
 
     public String call(String provider, String apiKey, String apiUrl, String model, String prompt, int maxTokens) {
+        return call(provider, apiKey, apiUrl, model, null, prompt, maxTokens, 0.1);
+    }
+
+    /**
+     * Phase 6 — 支持 system prompt + 温度参数的重载。
+     *
+     * @param systemPrompt 系统提示词，可为 null（null 时只发 user 消息）
+     * @param userPrompt   用户提示词
+     * @param maxTokens    最大输出 token 数
+     * @param temperature  温度 0.0~1.0（Phase 6 review LLM 使用 0.0 确保一致性）
+     */
+    public String call(String provider, String apiKey, String apiUrl, String model,
+                       String systemPrompt, String userPrompt, int maxTokens, double temperature) {
         if (apiKey == null || apiKey.isEmpty()) {
             throw new AiServiceException("API key not configured");
         }
 
         if ("anthropic".equals(provider)) {
-            return callAnthropicApi(apiUrl, apiKey, model, prompt, maxTokens);
+            return callAnthropicApi(apiUrl, apiKey, model, systemPrompt, userPrompt, maxTokens, temperature);
         }
-        return callOpenAiCompatibleApi(apiUrl, apiKey, model, prompt, maxTokens);
+        return callOpenAiCompatibleApi(apiUrl, apiKey, model, systemPrompt, userPrompt, maxTokens, temperature);
     }
 
-    private String callOpenAiCompatibleApi(String baseUrl, String apiKey, String model, String prompt, int maxTokens) {
+    private String callOpenAiCompatibleApi(String baseUrl, String apiKey, String model,
+                                           String systemPrompt, String userPrompt,
+                                           int maxTokens, double temperature) {
         try {
             String url = baseUrl.replaceAll("/+$", "") + "/v1/chat/completions";
 
-            Map<String, Object> message = new LinkedHashMap<>();
-            message.put("role", "user");
-            message.put("content", prompt);
+            List<Map<String, Object>> messages = new ArrayList<>();
+
+            // system prompt（Phase 6 review LLM 需要独立指令）
+            if (systemPrompt != null && !systemPrompt.isEmpty()) {
+                Map<String, Object> sysMsg = new LinkedHashMap<>();
+                sysMsg.put("role", "system");
+                sysMsg.put("content", systemPrompt);
+                messages.add(sysMsg);
+            }
+
+            Map<String, Object> userMsg = new LinkedHashMap<>();
+            userMsg.put("role", "user");
+            userMsg.put("content", userPrompt);
+            messages.add(userMsg);
 
             Map<String, Object> requestBody = new LinkedHashMap<>();
             requestBody.put("model", model);
-            requestBody.put("messages", Collections.singletonList(message));
-            requestBody.put("temperature", 0.1);
+            requestBody.put("messages", messages);
+            requestBody.put("temperature", temperature);
             requestBody.put("max_tokens", maxTokens);
 
             HttpHeaders headers = new HttpHeaders();
@@ -81,13 +107,15 @@ public class LlmClient {
     }
 
     @SuppressWarnings("unchecked")
-    private String callAnthropicApi(String baseUrl, String apiKey, String model, String prompt, int maxTokens) {
+    private String callAnthropicApi(String baseUrl, String apiKey, String model,
+                                     String systemPrompt, String userPrompt,
+                                     int maxTokens, double temperature) {
         try {
             String url = baseUrl.replaceAll("/+$", "") + "/v1/messages";
 
             Map<String, Object> textContent = new LinkedHashMap<>();
             textContent.put("type", "text");
-            textContent.put("text", prompt);
+            textContent.put("text", userPrompt);
 
             Map<String, Object> contentItem = new LinkedHashMap<>();
             contentItem.put("role", "user");
@@ -96,6 +124,13 @@ public class LlmClient {
             Map<String, Object> requestBody = new LinkedHashMap<>();
             requestBody.put("model", model);
             requestBody.put("max_tokens", maxTokens);
+            requestBody.put("temperature", temperature);
+
+            // Anthropic 的 system prompt 是顶层字段
+            if (systemPrompt != null && !systemPrompt.isEmpty()) {
+                requestBody.put("system", systemPrompt);
+            }
+
             requestBody.put("messages", Collections.singletonList(contentItem));
 
             HttpHeaders headers = new HttpHeaders();

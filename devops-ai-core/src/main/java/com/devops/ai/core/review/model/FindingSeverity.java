@@ -58,4 +58,19 @@ public enum FindingSeverity {
         }
         return INFO;
     }
+
+    /**
+     * Phase 6 — 从 review LLM 输出的 "P0"/"P1"/... 字符串映射到枚举。
+     */
+    public static FindingSeverity fromLevel(String level) {
+        if (level == null) return INFO;
+        switch (level.trim().toUpperCase()) {
+            case "P0": return BLOCKER;
+            case "P1": return HIGH;
+            case "P2": return MEDIUM;
+            case "P3": return LOW;
+            case "P4": return INFO;
+            default: return INFO;
+        }
+    }
 }

@@ -99,4 +99,24 @@ public enum FindingCategory {
         }
         return OTHER;
     }
+
+    /**
+     * Phase 6 — 从 review LLM 输出的 category 代码（如 "NPE"）映射到枚举。
+     * 支持枚举名和中文标签两种输入。
+     */
+    public static FindingCategory fromCode(String code) {
+        if (code == null || code.trim().isEmpty()) return OTHER;
+        String c = code.trim().toUpperCase();
+        try {
+            return valueOf(c);
+        } catch (IllegalArgumentException e) {
+            // 不是枚举名，尝试用中文标签匹配
+            for (FindingCategory cat : values()) {
+                if (cat.label.equals(code.trim()) || cat.name().equalsIgnoreCase(c)) {
+                    return cat;
+                }
+            }
+            return OTHER;
+        }
+    }
 }

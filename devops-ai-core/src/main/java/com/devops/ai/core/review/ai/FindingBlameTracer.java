@@ -76,8 +76,8 @@ public class FindingBlameTracer {
                 }
 
                 try {
-                    traceSingle(git, headId, f);
-                    traced++;
+                    boolean ok = traceSingle(git, headId, f);
+                    if (ok) traced++; else fallback++;
                 } catch (Exception e) {
                     log.warn("Blame failed for {} lines {}-{}: {}",
                             f.getFile(), f.getStartLine(), f.getEndLine(), e.getMessage());
@@ -100,8 +100,10 @@ public class FindingBlameTracer {
 
     /**
      * 对单条 P0/P1 Finding 执行 git blame。
+     *
+     * @return true 表示 blame 成功，false 表示需要 fallback
      */
-    private void traceSingle(Git git, ObjectId headId, Finding f) throws Exception {
+    private boolean traceSingle(Git git, ObjectId headId, Finding f) throws Exception {
         String filePath = f.getFile();
         int startLine = f.getStartLine();
         int endLine = f.getEndLine();
@@ -109,12 +111,12 @@ public class FindingBlameTracer {
         if (filePath == null || filePath.isEmpty()) {
             log.debug("Finding {} has no file path, skipping blame", f.getId());
             fallbackToGitLog(git, f);
-            return;
+            return false;
         }
         if (startLine <= 0) {
             log.debug("Finding {} has invalid startLine={}, skipping blame", f.getId(), startLine);
             fallbackToGitLog(git, f);
-            return;
+            return false;
         }
         if (endLine < startLine) {
             endLine = startLine;
@@ -131,20 +133,20 @@ public class FindingBlameTracer {
         } catch (Exception e) {
             log.debug("JGit blame failed for {}: {}", filePath, e.getMessage());
             fallbackToGitLog(git, f);
-            return;
+            return false;
         }
 
         if (jgitBlame == null) {
             log.debug("JGit blame returned null for {}", filePath);
             fallbackToGitLog(git, f);
-            return;
+            return false;
         }
 
         int totalLines = jgitBlame.getResultContents().size();
         if (totalLines == 0) {
             log.debug("File {} is empty, skipping blame", filePath);
             fallbackToGitLog(git, f);
-            return;
+            return false;
         }
 
         // 调整行号范围到文件边界内
@@ -179,7 +181,7 @@ public class FindingBlameTracer {
         if (blamedLines == 0 || byCommit.isEmpty()) {
             log.debug("No blame results for {} lines {}-{}", filePath, startLine, endLine);
             fallbackToGitLog(git, f);
-            return;
+            return false;
         }
 
         // 计算份额：按行数比例（张三 3行/4行=75%，李四 1行/4行=25%）
@@ -220,6 +222,7 @@ public class FindingBlameTracer {
 
         log.debug("Blame {} lines {}-{}: {} author(s), {} blamed lines",
                 filePath, startLine, endLine, byCommit.size(), blamedLines);
+        return true;
     }
 
     // ================================================================
