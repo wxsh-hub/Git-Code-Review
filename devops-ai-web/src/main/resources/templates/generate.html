@@ -120,6 +120,10 @@
                             <input type="checkbox" name="useCodeReview" id="useCodeReview" class="w-4 h-4 rounded accent-[#22C55E]" value="true">
                             AI 智能代码审查
                         </label>
+                        <label class="flex items-center gap-2 text-sm text-[#94A3B8] cursor-pointer" id="deepScanLabel" style="display:none;">
+                            <input type="checkbox" name="useOcrDeepScan" id="useOcrDeepScan" class="w-4 h-4 rounded accent-[#F59E0B]" value="true">
+                            全量深度扫描
+                        </label>
                     </div>
 
                     <div class="mt-6">
@@ -253,8 +257,23 @@
         radio.addEventListener('change', function() {
             document.getElementById('timeRangeGroup').style.display = this.value === 'time' ? '' : 'none';
             document.getElementById('hashRangeGroup').style.display = this.value === 'hash' ? '' : 'none';
+            updateDeepScanVisibility();
         });
     });
+
+    // 全量深度扫描：仅在勾选 AI 智能代码审查 + 选择时间范围（非 hash 范围）时显示
+    var codeReviewCb = document.getElementById('useCodeReview');
+    var deepScanLabel = document.getElementById('deepScanLabel');
+    var hashRadio = document.getElementById('filterHash');
+    var timeRadio = document.getElementById('filterTime');
+
+    function updateDeepScanVisibility() {
+        deepScanLabel.style.display =
+            (codeReviewCb.checked && hashRadio && !hashRadio.checked) ? '' : 'none';
+    }
+    codeReviewCb.addEventListener('change', updateDeepScanVisibility);
+    if (hashRadio) hashRadio.addEventListener('change', updateDeepScanVisibility);
+    if (timeRadio) timeRadio.addEventListener('change', updateDeepScanVisibility);
 </script>
 </body>
 </html>
