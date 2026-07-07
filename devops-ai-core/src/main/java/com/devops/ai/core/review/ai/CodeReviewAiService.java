@@ -539,7 +539,7 @@ public class CodeReviewAiService {
         sb.append("}\n");
         sb.append("```\n\n");
         sb.append("**审查重点（按严重程度）**：\n");
-        sb.append("- P0/阻断：SQL 注入、XSS、权限绕过、密码明文/硬编码密钥、死锁、事务缺失导致数据不一致\n");
+        sb.append("- P0/阻断：SQL 注入、XSS、权限绕过、密码明文/硬编码密钥/Token泄露 → 归类为「敏感信息暴露」、死锁、事务缺失导致数据不一致\n");
         sb.append("- P1/高：空指针、资源泄露（未关闭流/连接）、异常被吞、并发安全问题\n");
         sb.append("- P2/中：N+1 查询、不必要的循环/重复计算、日志缺失\n");
         sb.append("- P3/低：命名不规范、魔法数字、注释缺失\n\n");

@@ -40,9 +40,14 @@ public enum FindingCategory {
     public static FindingCategory fromDescription(String text) {
         if (text == null) return OTHER;
         String lower = text.toLowerCase();
-        if (lower.contains("sql") || lower.contains("注入") || lower.contains("xss") || lower.contains("权限")
-                || lower.contains("auth") || lower.contains("csrf") || lower.contains("injection")) {
-            return SECURITY;
+        // SECRET_EXPOSURE 优先级最高 — 任何涉及密码/token/密钥/敏感信息的内容
+        // 都优先归类为敏感信息暴露，避免被 "权限""硬编码"等关键词抢先匹配
+        if (lower.contains("密码") || lower.contains("password") || lower.contains("token")
+                || lower.contains("密钥") || lower.contains("secret") || lower.contains("apikey")
+                || lower.contains("api_key") || lower.contains("access_key") || lower.contains("敏感")
+                || lower.contains("凭据") || lower.contains("credential") || lower.contains("明文")
+                || lower.contains("泄露") || lower.contains("expose") || lower.contains("硬编码密钥")) {
+            return SECRET_EXPOSURE;
         }
         if (lower.contains("null") || lower.contains("空指针") || lower.contains("npe")
                 || lower.contains("nullpointer")) {
@@ -65,11 +70,6 @@ public enum FindingCategory {
         if (lower.contains("异常") || lower.contains("exception") || lower.contains("error")
                 || lower.contains("catch") || lower.contains("抛出")) {
             return ERROR_HANDLING;
-        }
-        if (lower.contains("密码") || lower.contains("password") || lower.contains("token")
-                || lower.contains("密钥") || lower.contains("secret") || lower.contains("apikey")
-                || lower.contains("api_key") || lower.contains("access_key") || lower.contains("敏感")) {
-            return SECRET_EXPOSURE;
         }
         if (lower.contains("命名") || lower.contains("格式") || lower.contains("风格") || lower.contains("style")
                 || lower.contains("注释") || lower.contains("comment") || lower.contains("规范")
