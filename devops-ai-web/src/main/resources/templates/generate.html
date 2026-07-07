@@ -19,7 +19,7 @@
                 <h3 class="text-sm font-medium text-[#F8FAFC]">生成配置</h3>
             </div>
             <div class="p-6">
-                <form action="/generate" method="post" th:action="@{/generate}">
+                <form action="/generate" method="post" th:action="@{/generate}" id="generateForm">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <div>
                             <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">项目配置</label>
@@ -57,11 +57,11 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mt-4" id="timeRangeGroup">
                         <div>
                             <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">起始时间</label>
-                            <input type="text" name="since" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="yyyy-MM-dd HH:mm:ss">
+                            <input type="text" name="since" id="sinceInput" class="datepicker input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="选择起始时间" data-input>
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-[#94A3B8] mb-1.5">截止时间</label>
-                            <input type="text" name="until" class="input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="yyyy-MM-dd HH:mm:ss">
+                            <input type="text" name="until" id="untilInput" class="datepicker input-field w-full bg-[#0A0E14] border border-[#1E293B] rounded-lg px-3 py-2.5 text-sm text-[#E2E8F0] focus:outline-none" placeholder="选择截止时间" data-input>
                         </div>
                     </div>
 
@@ -141,6 +141,15 @@
 </div>
 
 <script>
+    // flatpickr date picker — 中文日历 + 时间选择
+    flatpickr('.datepicker', {
+        enableTime: true,
+        dateFormat: 'Y-m-d H:i:S',
+        time_24hr: true,
+        locale: 'zh',
+        allowInput: true
+    });
+
     var configSelect = document.getElementById('configSelect');
     var branchSelect = document.getElementById('branchSelect');
     var authorSelect = document.getElementById('authorSelect');
