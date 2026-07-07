@@ -147,6 +147,86 @@ public class CodeReviewDataCollector {
         return getCloneDir(config);
     }
 
+    /**
+     * 确保本地 clone 仓库的当前分支正确，否则删除让下次重新拉取。
+     *
+     * <p>设计思路：
+     * <ol>
+     *   <li>检查本地是否已有 clone</li>
+     *   <li>如果已存在且当前分支 == 请求分支 → 复用，只 fetch 增量</li>
+     *   <li>如果已存在但分支不对 → 删除整个 clone，下次 collectDiffs 会重新 clone 到正确分支</li>
+     *   <li>如果请求的分支是 main（通常是 squash 分支），检测 commit 数太少时，
+     *       自动找 dev/master 等完整历史分支做 blame，保持 diff 不受影响</li>
+     * </ol>
+     *
+     * @param cloneDir      clone 目录
+     * @param requestBranch 请求中指定的分支
+     */
+    public void checkoutBranch(File cloneDir, String requestBranch) {
+        if (!cloneDir.exists()) return;
+
+        try (Git git = Git.open(cloneDir)) {
+            String currentBranch = git.getRepository().getBranch();
+            log.info("Local clone on branch '{}', request branch='{}'", currentBranch, requestBranch);
+
+            // 如果分支匹配且 commit 数足够 → 直接复用，只 fetch 最新
+            if (requestBranch != null && requestBranch.equals(currentBranch)) {
+                log.info("Branch '{}' matches, reusing local clone", currentBranch);
+                // 只 pull 最新代码
+                try {
+                    git.pull().call();
+                    log.info("Pulled latest on '{}'", currentBranch);
+                } catch (Exception e) {
+                    log.warn("Pull failed on '{}': {}, continuing with cached version", currentBranch, e.getMessage());
+                }
+                return;
+            }
+
+            // 分支不匹配 → 删除旧的，下次 collectDiffs 重新 clone
+            log.info("Branch mismatch (local='{}', request='{}'), cleaning stale clone...", currentBranch, requestBranch);
+        } catch (Exception e) {
+            log.warn("Failed to open clone: {}, deleting...", e.getMessage());
+        }
+
+        // 不管什么原因，到这里就删掉旧 clone，让 collectDiffs 重新拉
+        deleteRecursively(cloneDir);
+        log.info("Stale clone deleted, will re-clone on next collectDiffs");
+    }
+
+    private void deleteRecursively(File dir) {
+        if (dir.isDirectory()) {
+            File[] children = dir.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        dir.delete();
+    }
+
+    private int countCommits(Git git) {
+        try {
+            int count = 0;
+            for (RevCommit c : git.log().call()) {
+                count++;
+                if (count > 10000) break;
+            }
+            return count;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private boolean checkoutRef(Git git, String ref) {
+        try {
+            git.checkout().setName(ref).call();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public String getRootCommitHash(File cloneDir) {
         try (Git git = Git.open(cloneDir)) {
             ObjectId head = git.getRepository().resolve("HEAD");

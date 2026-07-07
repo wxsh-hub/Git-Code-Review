@@ -5,17 +5,23 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.devops.ai.infrastructure.entity.AiConfig;
+import com.devops.ai.infrastructure.repository.AiConfigRepository;
+import com.devops.ai.infrastructure.util.ConfigEncryptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +48,9 @@ public class OcrmcpClient {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final AtomicInteger REQUEST_ID = new AtomicInteger(1);
 
+    private final AiConfigRepository aiConfigRepository;
+    private final ConfigEncryptor configEncryptor;
+
     @Value("${ocr.bin.path:}")
     private String ocrBinPath;
 
@@ -53,6 +62,11 @@ public class OcrmcpClient {
 
     @Value("${ocr.fallback-on-error:true}")
     private boolean fallbackOnError;
+
+    public OcrmcpClient(AiConfigRepository aiConfigRepository, ConfigEncryptor configEncryptor) {
+        this.aiConfigRepository = aiConfigRepository;
+        this.configEncryptor = configEncryptor;
+    }
 
     // ---- public API ----
 
@@ -69,7 +83,13 @@ public class OcrmcpClient {
         log.info("Starting ocr serve: {} (timeout={}min)", ocr, timeoutMinutes);
 
         ProcessBuilder pb = new ProcessBuilder(ocr, "serve");
-        pb.redirectErrorStream(false); // stderr 保留给 [ocr] 日志，我们只读 stdout
+        // stderr 重定向到临时文件，便于调试 OCR 内部错误
+        File stderrFile = File.createTempFile("ocr-stderr-", ".log");
+        stderrFile.deleteOnExit();
+        pb.redirectError(stderrFile);
+
+        // 将 devops-ai 的 AI 配置通过环境变量传递给 OCR 子进程
+        injectAiConfigEnv(pb.environment());
 
         Process process = pb.start();
         BufferedWriter writer = new BufferedWriter(
@@ -82,7 +102,7 @@ public class OcrmcpClient {
             String initResp = sendRequest(writer, stdout, buildInitialize(), process);
             log.debug("MCP initialize response: {} chars", initResp != null ? initResp.length() : 0);
             if (initResp == null) {
-                throw new IOException("MCP initialize returned no response");
+                throw new IOException("MCP initialize returned no response\nOCR stderr:\n" + readStderr(stderrFile));
             }
 
             // Step 2: Send initialized notification (fire-and-forget)
@@ -91,7 +111,7 @@ public class OcrmcpClient {
             // Step 3: tools/call
             String result = sendRequest(writer, stdout, buildToolCall(toolName, arguments), process);
             if (result == null) {
-                throw new IOException("MCP tools/call returned no response");
+                throw new IOException("MCP tools/call returned no response\nOCR stderr:\n" + readStderr(stderrFile));
             }
 
             JsonNode resultNode = MAPPER.readTree(result);
@@ -116,6 +136,16 @@ public class OcrmcpClient {
             }
             return firstContent.toString();
 
+        } catch (IOException e) {
+            // 在已有 IOException 上追加 OCR stderr 内容（如果尚未包含）
+            String msg = e.getMessage();
+            if (msg != null && !msg.contains("OCR stderr:")) {
+                String stderr = readStderr(stderrFile);
+                if (!stderr.isEmpty()) {
+                    log.error("OCR stderr output:\n{}", stderr);
+                }
+            }
+            throw e;
         } finally {
             // 确保子进程被清理
             try { writer.close(); } catch (Exception ignored) {}
@@ -247,9 +277,8 @@ public class OcrmcpClient {
                     if (!process.isAlive()) {
                         readerThread.interrupt();
                         int exitCode = process.exitValue();
-                        if (exitCode != 0) {
-                            throw new IOException("ocr serve exited with code " + exitCode);
-                        }
+                        throw new IOException("ocr serve exited with code " + exitCode
+                                + (exitCode == 0 ? " before producing a response (likely no valid LLM endpoint configured)" : ""));
                     }
                     done.wait(Math.min(remaining, 5000));
                 }
@@ -306,6 +335,103 @@ public class OcrmcpClient {
     }
 
     // ---- helpers ----
+
+    /**
+     * 将 devops-ai 的 AI 配置（provider/apiUrl/apiKey/modelName）注入到 OCR 子进程的环境变量。
+     * OCR Go 二进制通过 tryOCREnv() 策略读取这些变量，优先级高于
+     * Claude Code 环境变量和 ~/.opencodereview/config.json。
+     */
+    private void injectAiConfigEnv(Map<String, String> env) {
+        String apiKey = getApiKey();
+        if (apiKey == null || apiKey.isEmpty()) {
+            log.warn("No LLM API key configured — OCR will try its own resolution chain");
+            return;
+        }
+
+        String apiUrl = getApiUrl();
+        String model = getModel();
+        String provider = getProvider();
+
+        env.put("OCR_LLM_URL", buildOpenAIEndpoint(apiUrl));
+        env.put("OCR_LLM_TOKEN", apiKey);
+        env.put("OCR_LLM_MODEL", model);
+        // Anthropic 协议是 OCR_USE_ANTHROPIC 默认值，非 Anthropic 时需显式关闭
+        if (!"anthropic".equalsIgnoreCase(provider)) {
+            env.put("OCR_USE_ANTHROPIC", "false");
+        }
+
+        log.info("Injected AI config for OCR subprocess: provider={}, model={}, url={}",
+                provider, model, env.get("OCR_LLM_URL"));
+    }
+
+    /**
+     * 构造 OpenAI 兼容的完整 API endpoint。
+     * OCR 的 NewOpenAIClient 会在 URL 不以 /chat/completions 结尾时自动拼接，
+     * 因此这里确保传入完整路径避免拼接错误（如 DeepSeek 需 /v1/chat/completions）。
+     */
+    private String buildOpenAIEndpoint(String baseUrl) {
+        String url = baseUrl != null ? baseUrl.trim() : "";
+        if (url.isEmpty()) return "";
+        if (url.endsWith("/chat/completions")) return url;
+        if (url.endsWith("/v1")) return url + "/chat/completions";
+        return url + "/v1/chat/completions";
+    }
+
+    // ---- AI 配置读取（复用 devops-ai 的 H2 数据库配置） ----
+
+    private String readConfig(String key) {
+        AiConfig config = aiConfigRepository.findByConfigKey(key);
+        return config != null ? config.getConfigValue() : "";
+    }
+
+    private String getApiKey() {
+        String encrypted = readConfig("llm.apiKey");
+        if (encrypted == null || encrypted.isEmpty()) return "";
+        try {
+            return configEncryptor.decrypt(encrypted);
+        } catch (Exception e) {
+            log.warn("Failed to decrypt API key: {}", e.getMessage());
+            return encrypted;
+        }
+    }
+
+    private String getApiUrl() {
+        String customUrl = readConfig("llm.apiUrl");
+        if (customUrl != null && !customUrl.trim().isEmpty()) return customUrl.trim();
+        String provider = readConfig("llm.provider");
+        if ("deepseek".equalsIgnoreCase(provider)) return "https://api.deepseek.com";
+        if ("openai".equalsIgnoreCase(provider)) return "https://api.openai.com/v1";
+        if ("anthropic".equalsIgnoreCase(provider)) return "https://api.anthropic.com";
+        return "https://api.deepseek.com";
+    }
+
+    private String getModel() {
+        String model = readConfig("llm.modelName");
+        return (model != null && !model.isEmpty()) ? model : "deepseek-chat";
+    }
+
+    private String getProvider() {
+        String provider = readConfig("llm.provider");
+        return (provider != null && !provider.isEmpty()) ? provider : "deepseek";
+    }
+
+    /**
+     * 读取 OCR 子进程的 stderr 临时文件内容（最多 4KB），用于调试。
+     */
+    private String readStderr(File stderrFile) {
+        try {
+            if (stderrFile.exists() && stderrFile.length() > 0) {
+                byte[] bytes = Files.readAllBytes(stderrFile.toPath());
+                String content = new String(bytes, StandardCharsets.UTF_8);
+                if (content.length() > 4096) {
+                    content = content.substring(0, 4096) + "\n... (truncated, " + content.length() + " chars total)";
+                }
+                return content;
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
+    }
 
     private static String truncate(String s) {
         if (s == null) return "null";

@@ -89,7 +89,7 @@ public class FindingBlameTracer {
             log.error("Failed to open git repo at {}: {}", repoPath, e.getMessage());
         }
 
-        log.info("Blame tracing complete: {} traced, {} fallback, {} skipped (P2-P4), {} total",
+        log.info("Blame tracing complete: {} traced, {} fallback, {} skipped (P3-P4), {} total",
                 traced, fallback, skipped, findings.size());
         return findings;
     }
@@ -268,9 +268,8 @@ public class FindingBlameTracer {
     // ================================================================
 
     private boolean isHighSeverity(FindingSeverity s) {
-        return s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH;
+        return s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH || s == FindingSeverity.MEDIUM;
     }
-
     // ================================================================
     // 内部辅助类
     // ================================================================

@@ -173,8 +173,8 @@ public class Finding {
             f.severity = FindingSeverity.fromDescription(content);
             f.category = FindingCategory.fromDescription(content);
         }
-        // OCR 初始置信度（未经复核）
-        f.confidence = 0.75;
+        // OCR 初始置信度（未经复核，故意用非整数避免取整效果）
+        f.confidence = 0.73;
         f.status = FindingStatus.UNREVIEWED; // 等待 Phase 6 交叉验证
 
         return f;

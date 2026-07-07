@@ -50,13 +50,18 @@ public class ReviewLlmService {
             "3. 判断严重度时从风险角度考虑：是否会导致线上故障、数据丢失或安全漏洞\n\n" +
             "输出必须是合法 JSON，不要包含 markdown 代码块标记：\n" +
             "{\n" +
-            "  \"confidence\": 0.85,\n" +
+            "  \"confidence\": 0.82,\n" +
             "  \"severity\": \"P1\",\n" +
             "  \"category\": \"NPE\",\n" +
             "  \"reason\": \"findById 返回 null 后未做检查直接调用 getName\",\n" +
             "  \"trigger\": \"当传入的 id 在数据库中不存在时\",\n" +
             "  \"suggestedFix\": \"用 Optional.ofNullable(user).orElseThrow(...) 包装\"\n" +
-            "}";
+            "}\n\n" +
+            "confidence 评分规则：\n" +
+            "- 使用精确的小数值（如 0.87、0.63、0.91），不要四舍五入到 0.05 的整数倍\n" +
+            "- 这个分数代表你对该问题「确实是缺陷」的把握程度\n" +
+            "- 0.95+ = 几乎确定是缺陷，0.70-0.85 = 很可能有缺陷，" +
+            "0.50-0.69 = 可能是缺陷或设计不佳，0.30-0.49 = 大概率不是缺陷";
 
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
@@ -74,9 +79,9 @@ public class ReviewLlmService {
     // ================================================================
 
     /**
-     * 对 P0/P1 Finding 执行双 LLM 交叉验证。
+     * 对 P0/P1/P2 Finding 执行双 LLM 交叉验证。
      *
-     * <p>P2-P4 Finding 直接透传，不做验证以节省 API 调用。</p>
+     * <p>P3-P4 Finding 直接透传，不做验证以节省 API 调用。</p>
      *
      * @param findings 原始 Finding 列表（已完成 blame 追溯）
      * @param context  审查上下文
@@ -310,7 +315,7 @@ public class ReviewLlmService {
     // ================================================================
 
     private boolean isHighSeverity(FindingSeverity s) {
-        return s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH;
+        return s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH || s == FindingSeverity.MEDIUM;
     }
 
     private String formatSeverity(FindingSeverity s) {

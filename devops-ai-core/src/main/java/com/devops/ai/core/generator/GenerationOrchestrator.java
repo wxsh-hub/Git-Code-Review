@@ -363,6 +363,9 @@ public class GenerationOrchestrator {
                         File cloneDir = codeReviewDataCollector.resolveCloneDir(projectConfig);
                         String repoPath = cloneDir.getAbsolutePath();
 
+                        // 确保 clone 在正确的分支上，否则 git blame 只看到 squash 后的历史
+                        codeReviewDataCollector.checkoutBranch(cloneDir, request.getBranch());
+
                         // Run code-review-graph static analysis
                         String graphJson = codeReviewGraphEngine.analyze(repoPath, reviewSinceHash);
                         if (graphJson == null) {

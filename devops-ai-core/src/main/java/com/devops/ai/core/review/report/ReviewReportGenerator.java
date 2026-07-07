@@ -218,16 +218,25 @@ public class ReviewReportGenerator {
             }
             sevIdx++;
 
-            // P3/P4: collapsed one-line display
+            // P3/P4: compact multi-line display
             if (s.ordinal() >= FindingSeverity.LOW.ordinal()) {
                 sb.append("- **").append(s.getLevel()).append("-").append(sevIdx).append("** `")
                         .append(f.getFile() != null ? f.getFile() : "-").append("`")
                         .append(" 第").append(f.getStartLine()).append("-").append(f.getEndLine()).append("行")
                         .append(" — ").append(f.getCategory() != null ? f.getCategory().getLabel() : "其他");
-                if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
-                    sb.append(": ").append(truncateLine(f.getEvidence(), 60));
+                // 问题描述（content/trigger）
+                if (f.getTrigger() != null && !f.getTrigger().isEmpty()) {
+                    sb.append(": ").append(f.getTrigger().replace("\n", " "));
                 }
-                sb.append("\n");
+                // 证据代码
+                if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
+                    sb.append("\n  > ").append(f.getEvidence().replace("\n", "\n  > "));
+                }
+                // 建议修复
+                if (f.getSuggestedFix() != null && !f.getSuggestedFix().isEmpty()) {
+                    sb.append("\n  > **建议**: ").append(f.getSuggestedFix().replace("\n", " "));
+                }
+                sb.append("\n\n");
                 continue;
             }
 
@@ -253,7 +262,7 @@ public class ReviewReportGenerator {
                     ? f.getCandidateHandler() : "待指派";
             String reviewer = f.getReviewer() != null ? f.getReviewer() + " ✓" : "-";
             String deadline = computeDeadline(f.getSeverity(), context.getReviewDate());
-            String confPct = String.format("%.0f%%", f.getConfidence() * 100);
+            String confPct = String.format("%.1f%%", f.getConfidence() * 100);
             String statusLabel = f.getStatus() != null ? f.getStatus().getLabel() : "未复核";
 
             sb.append("| 项目 | 内容 |\n");

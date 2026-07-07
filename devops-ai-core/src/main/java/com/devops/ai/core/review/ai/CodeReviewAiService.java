@@ -126,9 +126,11 @@ public class CodeReviewAiService {
         List<Finding> allFindings = new ArrayList<>();
 
         if (context.getSinceHash() != null && context.getUntilHash() != null) {
-            // diff 模式：全量文件一次调用。OCR 的 code_review_diff 只审查变更行，
-            // 分组没有任何收益，反而 138 个文件拆成 45 组造成 45 次 OCR 子进程调用
-            List<Finding> findings = reviewAll(filtered, context);
+            // diff 模式：按模块分组，每组一次 LLM 调用（打包该组所有 diff）。
+            // 相比 OCR code_review_diff（逐文件 Plan+Main = 276 次 LLM 调用），
+            // 此方式只需 5-7 次 LLM 调用，速度接近 legacy 但输出结构化 JSON，
+            // 完整保留 blame → crossValidate → secret → verify 后处理管线。
+            List<Finding> findings = reviewDiffByModule(filtered, context);
             for (Finding f : findings) {
                 if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
             }
@@ -291,45 +293,194 @@ public class CodeReviewAiService {
     // ================================================================
 
     /**
-     * diff 模式：全量文件一次调用 OCR MCP。
-     * code_review_diff 只审查变更行，分组无收益，一次传全部文件效率最高。
+     * diff 模式：按模块分组，每组一次 LLM 调用（打包该组所有文件 diff）。
+     *
+     * <p>设计原因：OCR 的 code_review_diff 对每个文件执行 Plan+Main 两阶段 LLM 调用，
+     * 138 文件 = 276 次调用，8 并发也要 12+ 分钟，远超 30 分钟超时。
+     * 而 legacy 把所有 diff 打包在一个 prompt 只需 10-30 秒。
+     *
+     * <p>折中方案：按模块分组（5-7 组），每组打包该组所有文件 diff 到一个 prompt，
+     * 要求 LLM 输出结构化 JSON（OcrComment 格式），然后走完整的
+     * blame → crossValidate → secret → verify 后处理管线。
+     *
+     * <p>预期效果：5-7 组 × 4 并发 ≈ 2 轮 LLM 调用 ≈ 1-2 分钟完成。</p>
      */
-    List<Finding> reviewAll(List<FileDiff> diffs, CodeReviewContext context) throws Exception {
-        Map<String, Object> args = new HashMap<>();
-        args.put("repo_dir", context.getRepoPath() != null ? context.getRepoPath() : "");
-        args.put("background", buildGraphBackground(context));
-        if (getModel() != null && !getModel().isEmpty()) {
-            args.put("model", getModel());
+    List<Finding> reviewDiffByModule(List<FileDiff> diffs, CodeReviewContext context) throws Exception {
+        Map<String, ReviewGroup> groups = groupByBusinessLink(diffs, context);
+        int concurrency = Math.min(scanConcurrency, groups.size());
+        log.info("Diff review: {} files → {} module groups, {} concurrency",
+                diffs.size(), groups.size(), concurrency);
+
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
+
+        try {
+            for (ReviewGroup group : groups.values()) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        log.info("Module '{}': {} files → calling LLM...", group.name, group.files.size());
+                        List<Finding> findings = reviewModuleGroupDirect(group, context);
+                        log.info("Module '{}': {} findings", group.name, findings.size());
+                        return findings;
+                    } catch (Exception e) {
+                        log.error("Module '{}' review failed: {}", group.name, e.getMessage());
+                        return Collections.<Finding>emptyList();
+                    }
+                }, executor));
+            }
+
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            List<Finding> allFindings = new ArrayList<>();
+            for (CompletableFuture<List<Finding>> f : futures) {
+                allFindings.addAll(f.get());
+            }
+            log.info("Diff review complete: {} findings from {} files in {} groups",
+                    allFindings.size(), diffs.size(), groups.size());
+            return allFindings;
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    /**
+     * 对一个业务链路组直接调用 LLM（不走 OCR），打包该组所有文件 diff。
+     * LLM 输出结构化 JSON，解析为 OcrComment → Finding。
+     */
+    List<Finding> reviewModuleGroupDirect(ReviewGroup group, CodeReviewContext context) throws Exception {
+        String prompt = buildModuleReviewPrompt(group, context);
+        String response = callLlm(prompt);
+
+        // LLM 可能输出带 markdown 代码块的 JSON，需要剥离
+        String json = extractJson(response);
+        if (json.isEmpty()) {
+            log.warn("Module '{}': LLM returned no valid JSON, raw={}", group.name,
+                    response.length() > 200 ? response.substring(0, 200) + "..." : response);
+            return Collections.emptyList();
         }
 
-        String paths = diffs.stream()
-                .map(FileDiff::getFilePath)
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining(","));
-        args.put("path", paths);
-        args.put("from", context.getSinceHash());
-        args.put("to", context.getUntilHash());
-
-        log.info("Reviewing all {} files via code_review_diff", diffs.size());
-
-        String ocrJson = ocrmcpClient.callTool("code_review_diff", args);
-        OcrReviewResponse ocrResult = MAPPER.readValue(ocrJson, OcrReviewResponse.class);
+        OcrReviewResponse ocrResult;
+        try {
+            ocrResult = MAPPER.readValue(json, OcrReviewResponse.class);
+        } catch (Exception e) {
+            log.error("Module '{}': failed to parse LLM JSON: {} — raw={}", group.name, e.getMessage(),
+                    json.length() > 300 ? json.substring(0, 300) + "..." : json);
+            return Collections.emptyList();
+        }
 
         List<Finding> findings = new ArrayList<>();
         List<OcrComment> comments = ocrResult.getComments();
         if (comments != null) {
             for (OcrComment cm : comments) {
                 Finding f = Finding.fromOcrComment(cm);
-                // moduleName diff 模式下从文件路径提取
-                String module = ModulePathResolver.resolveModule(cm.getPath());
-                f.setModuleName(module != null ? module : "other");
+                // 直接用组名作为模块名（比事后从路径重新解析更可靠）
+                f.setModuleName(group.name);
                 findings.add(f);
             }
         }
 
-        log.info("Diff review: {} ocr comments → {} findings",
-                comments != null ? comments.size() : 0, findings.size());
+        log.info("Module '{}': {} ocr comments → {} findings",
+                group.name, comments != null ? comments.size() : 0, findings.size());
         return findings;
+    }
+
+    /**
+     * 构建模块级审查 prompt：项目信息 + 该组所有文件 diff + 结构化 JSON 输出指令。
+     */
+    private String buildModuleReviewPrompt(ReviewGroup group, CodeReviewContext context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("你是一个资深的 Java 代码审查专家。请审查以下代码变更。\n\n");
+        sb.append("## 项目信息\n");
+        sb.append("- 项目：").append(context.getProjectName() != null ? context.getProjectName() : "unknown").append("\n");
+        sb.append("- 分支：").append(context.getBranch() != null ? context.getBranch() : "unknown").append("\n\n");
+
+        sb.append("## 变更文件（模块: ").append(group.name).append("，共 ").append(group.files.size()).append(" 个文件）\n\n");
+        for (FileDiff diff : group.files) {
+            String changeLabel = diff.getChangeType() != null ? diff.getChangeType() : "MODIFY";
+            sb.append("### ").append(diff.getFilePath()).append(" (").append(changeLabel).append(")\n");
+            if (diff.getUnifiedDiff() != null && !diff.getUnifiedDiff().isEmpty()) {
+                // 截断过大的 diff（>8000 字符）避免超出 LLM 上下文
+                String diffContent = diff.getUnifiedDiff();
+                if (diffContent.length() > 8000) {
+                    diffContent = diffContent.substring(0, 8000) + "\n... [truncated, total " + diffContent.length() + " chars]";
+                }
+                sb.append("```diff\n").append(diffContent).append("\n```\n\n");
+            } else if (diff.getNewContent() != null && !diff.getNewContent().isEmpty()) {
+                String content = diff.getNewContent();
+                if (content.length() > 4000) {
+                    content = content.substring(0, 4000) + "\n... [truncated]";
+                }
+                sb.append("```java\n").append(content).append("\n```\n\n");
+            }
+        }
+
+        // 架构上下文
+        if (group.background != null && !group.background.isEmpty()) {
+            sb.append("## 架构上下文\n").append(group.background).append("\n\n");
+        }
+
+        sb.append("## 审查要求\n\n");
+        sb.append("请逐文件逐行审查以上代码变更，输出严格的结构化 JSON。\n\n");
+        sb.append("**输出格式**（一个 JSON 对象，不要 markdown 代码块标记）：\n");
+        sb.append("```\n");
+        sb.append("{\n");
+        sb.append("  \"comments\": [\n");
+        sb.append("    {\n");
+        sb.append("      \"path\": \"文件路径（相对于项目根目录）\",\n");
+        sb.append("      \"content\": \"问题描述（简洁明确，说明什么问题、为什么是问题）\",\n");
+        sb.append("      \"existingCode\": \"现有问题代码\",\n");
+        sb.append("      \"suggestionCode\": \"建议修改后的代码（如适用）\",\n");
+        sb.append("      \"startLine\": 行号（整数，对应 diff 中 @@ -a,b +c,d @@ 的 +c 侧行号）,\n");
+        sb.append("      \"endLine\": 行号（整数）,\n");
+        sb.append("      \"thinking\": \"分析推理过程\"\n");
+        sb.append("    }\n");
+        sb.append("  ]\n");
+        sb.append("}\n");
+        sb.append("```\n\n");
+        sb.append("**审查重点（按严重程度）**：\n");
+        sb.append("- P0/阻断：SQL 注入、XSS、权限绕过、密码明文/硬编码密钥、死锁、事务缺失导致数据不一致\n");
+        sb.append("- P1/高：空指针、资源泄露（未关闭流/连接）、异常被吞、并发安全问题\n");
+        sb.append("- P2/中：N+1 查询、不必要的循环/重复计算、日志缺失\n");
+        sb.append("- P3/低：命名不规范、魔法数字、注释缺失\n\n");
+        sb.append("**要求**：\n");
+        sb.append("1. 每个 comment 必须包含 path、content、startLine、endLine 字段\n");
+        sb.append("2. startLine 对应 diff 中新增/修改代码在原文件中的行号\n");
+        sb.append("3. 如果没有发现问题，返回 {\"comments\": []}\n");
+        sb.append("4. 只输出 JSON，不要有任何其他文字或解释\n");
+        sb.append("5. 不要用 ```json ``` 包裹，直接输出 { 开头");
+
+        return sb.toString();
+    }
+
+    /**
+     * 从 LLM 响应中提取 JSON 对象。
+     * LLM 可能输出纯 JSON，也可能用 markdown 代码块包裹。
+     */
+    static String extractJson(String response) {
+        if (response == null || response.trim().isEmpty()) return "";
+        String text = response.trim();
+
+        // 尝试找 ```json ... ``` 或 ``` ... ```
+        int fenceStart = text.indexOf("```");
+        if (fenceStart >= 0) {
+            int jsonStart = text.indexOf('\n', fenceStart);
+            if (jsonStart >= 0) {
+                int fenceEnd = text.indexOf("```", jsonStart + 1);
+                if (fenceEnd >= 0) {
+                    String inner = text.substring(jsonStart + 1, fenceEnd).trim();
+                    if (inner.startsWith("{")) return inner;
+                }
+            }
+        }
+
+        // 直接找第一个 { 到最后一个 }
+        int braceStart = text.indexOf('{');
+        int braceEnd = text.lastIndexOf('}');
+        if (braceStart >= 0 && braceEnd > braceStart) {
+            return text.substring(braceStart, braceEnd + 1);
+        }
+
+        return "";
     }
 
     /**
@@ -478,8 +629,8 @@ public class CodeReviewAiService {
      * <pre>
      *   List&lt;Finding&gt; raw
      *     │
-     *     ├─ Phase 5: FindingBlameTracer.trace()          ← 对 P0/P1 做 git blame
-     *     ├─ Phase 6: ReviewLlmService.crossValidate()     ← 双 LLM 交叉验证
+     *     ├─ Phase 5: FindingBlameTracer.trace()          ← 对 P0/P1/P2 做 git blame
+     *     ├─ Phase 6: ReviewLlmService.crossValidate()     ← 对 P0/P1/P2 双 LLM 交叉验证
      *     ├─ Phase 3: SecretDetector.detectAndSanitize()   ← 脱敏 + SECRET_EXPOSURE
      *     ├─ Phase 3: FindingVerifier.verify()            ← 行号校验/去重/误报/完整性
      *     └─ 输出
@@ -491,10 +642,10 @@ public class CodeReviewAiService {
     List<Finding> runPipeline(List<Finding> findings, CodeReviewContext context) {
         if (findings == null || findings.isEmpty()) return Collections.emptyList();
 
-        // ===== Phase 5: Blame 追溯（P0/P1）=====
+        // ===== Phase 5: Blame 追溯（P0/P1/P2）=====
         List<Finding> traced = findingBlameTracer.trace(findings, context.getRepoPath());
 
-        // ===== Phase 6: 双 LLM 交叉验证（P0/P1）=====
+        // ===== Phase 6: 双 LLM 交叉验证（P0/P1/P2）=====
         List<Finding> validated = reviewLlmService.crossValidate(traced, context);
 
         // ===== Phase 3: SecretDetector — 脱敏 + 新增 SECRET_EXPOSURE =====
