@@ -2,6 +2,7 @@ package com.devops.ai.core.review.ai;
 
 import com.devops.ai.core.llm.LlmClient;
 import com.devops.ai.core.review.model.*;
+import com.devops.ai.core.review.parser.JavaFileParser;
 import com.devops.ai.infrastructure.entity.AiConfig;
 import com.devops.ai.infrastructure.exception.AiServiceException;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
@@ -311,6 +312,10 @@ public class CodeReviewAiService {
         log.info("Diff review: {} files → {} module groups, {} concurrency",
                 diffs.size(), groups.size(), concurrency);
 
+        // 构建跨模块依赖索引：FQCN → FileDiff
+        // 键 = 全限定类名（如 com.example.UserService），值 = 该类的变更 diff
+        Map<String, FileDiff> classIndex = buildClassIndex(diffs);
+
         ExecutorService executor = Executors.newFixedThreadPool(concurrency);
         List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
 
@@ -319,7 +324,9 @@ public class CodeReviewAiService {
                 futures.add(CompletableFuture.supplyAsync(() -> {
                     try {
                         log.info("Module '{}': {} files → calling LLM...", group.name, group.files.size());
-                        List<Finding> findings = reviewModuleGroupDirect(group, context);
+                        // 构建本模块的跨模块上下文：本模块 import 了哪些其他模块的类，附带具体 diff
+                        String crossRefs = buildCrossModuleContext(group, classIndex);
+                        List<Finding> findings = reviewModuleGroupDirect(group, context, crossRefs);
                         log.info("Module '{}': {} findings", group.name, findings.size());
                         return findings;
                     } catch (Exception e) {
@@ -344,11 +351,100 @@ public class CodeReviewAiService {
     }
 
     /**
+     * 构建全限定类名 → FileDiff 索引。
+     * 遍历所有变更的 Java 文件，解析 package + class 名，建立 FQCN → diff 映射。
+     */
+    private Map<String, FileDiff> buildClassIndex(List<FileDiff> diffs) {
+        Map<String, FileDiff> index = new LinkedHashMap<>();
+        for (FileDiff diff : diffs) {
+            if (!JavaFileParser.isJavaFile(diff.getFilePath())) continue;
+            String source = diff.getNewContent();
+            if (source == null || source.isEmpty()) continue;
+            JavaFileParser parser = new JavaFileParser(source);
+            String pkg = parser.getPackageName();
+            if (pkg == null || pkg.isEmpty()) continue;
+            for (String className : parser.getClassNames()) {
+                String fqcn = pkg + "." + className;
+                index.put(fqcn, diff);
+            }
+        }
+        log.debug("Built class index: {} FQCN entries from {} diffs", index.size(), diffs.size());
+        return index;
+    }
+
+    /**
+     * 构建本模块的跨模块上下文文本。
+     * 扫描本组所有文件的 import，找出哪些 import 对应了其他模块的变更类，
+     * 附带被引用类的实际 diff 内容，让 LLM 能精确判断接口兼容性。
+     *
+     * @return 跨模块影响描述文本，如果没有跨模块依赖则返回空字符串
+     */
+    private String buildCrossModuleContext(ReviewGroup group, Map<String, FileDiff> classIndex) {
+        // 本组内的文件路径集合
+        Set<String> ownFiles = new LinkedHashSet<>();
+        for (FileDiff f : group.files) {
+            ownFiles.add(f.getFilePath());
+        }
+
+        // FQCN → FileDiff，且该 FileDiff 不属于本组
+        Map<String, FileDiff> externalDeps = new LinkedHashMap<>();
+        for (FileDiff f : group.files) {
+            if (!JavaFileParser.isJavaFile(f.getFilePath())) continue;
+            String source = f.getNewContent();
+            if (source == null || source.isEmpty()) continue;
+            JavaFileParser parser = new JavaFileParser(source);
+            for (String imp : parser.getImports()) {
+                if (imp.startsWith("java.") || imp.startsWith("javax.") || imp.startsWith("sun.")) continue;
+                if (!imp.contains(".")) continue;
+                FileDiff target = classIndex.get(imp);
+                if (target != null && !ownFiles.contains(target.getFilePath())) {
+                    externalDeps.put(imp, target);
+                }
+            }
+        }
+
+        if (externalDeps.isEmpty()) return "";
+
+        // 防止重复：同一类可能被多个文件 import，只展示一次
+        // 但不同 import 指向不同 FileDiff 时可以有多条
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n\n## ⚠️ 跨模块影响（请重点检查接口兼容性）\n\n");
+        sb.append("本模块的以下文件导入了其他模块变更了的类，请注意不要遗漏跨模块问题：\n\n");
+
+        Set<String> shown = new LinkedHashSet<>();
+        for (Map.Entry<String, FileDiff> entry : externalDeps.entrySet()) {
+            String importedFqcn = entry.getKey();
+            FileDiff targetDiff = entry.getValue();
+            if (shown.contains(importedFqcn)) continue;
+            shown.add(importedFqcn);
+
+            sb.append("### 外部变更类: `").append(importedFqcn).append("`\n");
+            sb.append("  - 所在文件: ").append(targetDiff.getFilePath()).append("\n");
+
+            // 附带实际 diff 内容（截断到 2000 字符，一个类变更通常不会太大）
+            if (targetDiff.getUnifiedDiff() != null && !targetDiff.getUnifiedDiff().isEmpty()) {
+                String hunk = targetDiff.getUnifiedDiff();
+                if (hunk.length() > 2000) {
+                    hunk = hunk.substring(0, 2000) + "\n... [diff truncated]";
+                }
+                sb.append("  - 变更内容:\n```diff\n").append(hunk).append("\n```\n");
+            }
+            sb.append("\n");
+        }
+
+        sb.append("**请额外检查**：\n");
+        sb.append("- 调用方是否需要适配新的返回类型、参数或异常声明\n");
+        sb.append("- 是否有被删除的方法或类在其他模块中仍在被使用\n");
+        sb.append("- 接口语义是否发生了不兼容的变化\n");
+        return sb.toString();
+    }
+
+    /**
      * 对一个业务链路组直接调用 LLM（不走 OCR），打包该组所有文件 diff。
      * LLM 输出结构化 JSON，解析为 OcrComment → Finding。
      */
-    List<Finding> reviewModuleGroupDirect(ReviewGroup group, CodeReviewContext context) throws Exception {
-        String prompt = buildModuleReviewPrompt(group, context);
+    List<Finding> reviewModuleGroupDirect(ReviewGroup group, CodeReviewContext context, String crossRefs) throws Exception {
+        String prompt = buildModuleReviewPrompt(group, context, crossRefs);
         String response = callLlm(prompt);
 
         // LLM 可能输出带 markdown 代码块的 JSON，需要剥离
@@ -387,7 +483,7 @@ public class CodeReviewAiService {
     /**
      * 构建模块级审查 prompt：项目信息 + 该组所有文件 diff + 结构化 JSON 输出指令。
      */
-    private String buildModuleReviewPrompt(ReviewGroup group, CodeReviewContext context) {
+    private String buildModuleReviewPrompt(ReviewGroup group, CodeReviewContext context, String crossRefs) {
         StringBuilder sb = new StringBuilder();
         sb.append("你是一个资深的 Java 代码审查专家。请审查以下代码变更。\n\n");
         sb.append("## 项目信息\n");
@@ -419,6 +515,11 @@ public class CodeReviewAiService {
             sb.append("## 架构上下文\n").append(group.background).append("\n\n");
         }
 
+        // 跨模块依赖上下文
+        if (crossRefs != null && !crossRefs.isEmpty()) {
+            sb.append(crossRefs);
+        }
+
         sb.append("## 审查要求\n\n");
         sb.append("请逐文件逐行审查以上代码变更，输出严格的结构化 JSON。\n\n");
         sb.append("**输出格式**（一个 JSON 对象，不要 markdown 代码块标记）：\n");
@@ -447,7 +548,8 @@ public class CodeReviewAiService {
         sb.append("2. startLine 对应 diff 中新增/修改代码在原文件中的行号\n");
         sb.append("3. 如果没有发现问题，返回 {\"comments\": []}\n");
         sb.append("4. 只输出 JSON，不要有任何其他文字或解释\n");
-        sb.append("5. 不要用 ```json ``` 包裹，直接输出 { 开头");
+        sb.append("5. 不要用 ```json ``` 包裹，直接输出 { 开头\n");
+        sb.append("6. **禁止使用省略号（...）** — content/thinking/existingCode/suggestionCode 都输出完整内容，不截断不缩写");
 
         return sb.toString();
     }
@@ -904,7 +1006,7 @@ public class CodeReviewAiService {
         String apiUrl = getApiUrl();
         String model = getModel();
         log.info("Calling LLM for code review: provider={}, model={}", provider, model);
-        return llmClient.call(provider, apiKey, apiUrl, model, prompt, 4096);
+        return llmClient.call(provider, apiKey, apiUrl, model, prompt, 16384);
     }
 
     private CodeReviewResult parseResponse(String response, CodeReviewResult result) {
