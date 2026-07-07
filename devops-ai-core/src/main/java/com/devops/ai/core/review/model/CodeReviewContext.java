@@ -23,6 +23,7 @@ public class CodeReviewContext {
     private String scopeDescription;        // 范围描述文本（如"自 2025-01-15 起共 78 个 commit"）
     private int commitCount;                // commit 数量
     private Date reviewDate;                // 审查日期（Phase 8 用于截止时间计算）
+    private boolean useOcrDeepScan;         // 是否启用 OCR 深度扫描（code_scan 逐文件审查全部内容）
 
     public String getProjectName() { return projectName; }
     public void setProjectName(String projectName) { this.projectName = projectName; }
@@ -56,4 +57,6 @@ public class CodeReviewContext {
     public void setCommitCount(int commitCount) { this.commitCount = commitCount; }
     public Date getReviewDate() { return reviewDate; }
     public void setReviewDate(Date reviewDate) { this.reviewDate = reviewDate; }
+    public boolean isUseOcrDeepScan() { return useOcrDeepScan; }
+    public void setUseOcrDeepScan(boolean useOcrDeepScan) { this.useOcrDeepScan = useOcrDeepScan; }
 }

@@ -50,6 +50,7 @@ public class DocumentApiController {
             @RequestParam(required = false, defaultValue = "false") boolean sync,
             @RequestParam(required = false, defaultValue = "false") boolean useCodeReview,
             @RequestParam(required = false, defaultValue = "false") boolean useEfficiencyAnalysis,
+            @RequestParam(required = false, defaultValue = "false") boolean useOcrDeepScan,
             @RequestParam(required = false, defaultValue = "markdown") String reviewFormat) {
 
         if (StrUtil.isBlank(projectCode)) {
@@ -92,6 +93,7 @@ public class DocumentApiController {
         docRequest.setUseAiClassifier(useAiClassifier);
         docRequest.setUseCodeReview(useCodeReview);
         docRequest.setUseEfficiencyAnalysis(useEfficiencyAnalysis);
+        docRequest.setUseOcrDeepScan(useOcrDeepScan);
         docRequest.setReviewFormat(reviewFormat);
 
         if (StrUtil.isBlank(docRequest.getUntil())) {
@@ -185,6 +187,7 @@ public class DocumentApiController {
         docRequest.setIncremental(request.isIncremental());
         docRequest.setUseAiClassifier(request.isUseAiClassifier());
         docRequest.setUseCodeReview(request.isUseCodeReview());
+        docRequest.setUseOcrDeepScan(request.isUseOcrDeepScan());
         docRequest.setReviewFormat(request.getReviewFormat());
 
         if (StrUtil.isBlank(docRequest.getUntil())) {

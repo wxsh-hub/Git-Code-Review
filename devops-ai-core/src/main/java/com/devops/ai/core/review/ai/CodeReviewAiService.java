@@ -13,6 +13,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
 @Component
@@ -40,6 +43,12 @@ public class CodeReviewAiService {
 
     @Value("${ocr.fallback-on-error:true}")
     private boolean ocrFallbackOnError;
+
+    @Value("${ocr.scan-concurrency:4}")
+    private int scanConcurrency;
+
+    @Value("${ocr.scan-batch-size:20}")
+    private int scanBatchSize;
 
     public CodeReviewAiService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
                                ConfigEncryptor configEncryptor, OcrmcpClient ocrmcpClient,
@@ -126,18 +135,51 @@ public class CodeReviewAiService {
             allFindings.addAll(findings);
             log.info("Diff review complete: {} findings from {} files", findings.size(), filtered.size());
         } else {
-            // scan 模式（无 hash 范围）：按业务链路分组逐组扫描
-            Map<String, ReviewGroup> groups = groupByBusinessLink(filtered, context);
-            for (ReviewGroup group : groups.values()) {
+            // scan 模式（无 hash 范围）：仅深度扫描时走 OCR code_scan，分批 + 线程池并发
+            if (context.isUseOcrDeepScan()) {
+                List<List<FileDiff>> batches = splitIntoBatches(filtered, context, scanBatchSize);
+                // 预先计算 graph background，避免每个 batch 内重复解析 JSON
+                String graphBg = buildGraphBackground(context);
+                ExecutorService executor = Executors.newFixedThreadPool(scanConcurrency);
+                List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
+
                 try {
-                    List<Finding> groupFindings = reviewGroup(group, context);
-                    allFindings.addAll(groupFindings);
-                    moduleSet.add(group.name);
-                    log.info("Group '{}' reviewed: {} findings from {} files",
-                            group.name, groupFindings.size(), group.files.size());
-                } catch (Exception e) {
-                    log.error("Group '{}' review failed: {}", group.name, e.getMessage());
+                    for (int i = 0; i < batches.size(); i++) {
+                        final int batchIdx = i;
+                        final List<FileDiff> batch = batches.get(i);
+                        futures.add(CompletableFuture.supplyAsync(() -> {
+                            try {
+                                log.info("Batch {}/{}: {} files starting via code_scan",
+                                        batchIdx + 1, batches.size(), batch.size());
+                                List<Finding> batchFindings = reviewBatch(batch, context, graphBg, batchIdx);
+                                log.info("Batch {}/{}: {} findings", batchIdx + 1, batches.size(), batchFindings.size());
+                                return batchFindings;
+                            } catch (Exception e) {
+                                log.error("Batch {}/{} failed: {}", batchIdx + 1, batches.size(), e.getMessage());
+                                return Collections.<Finding>emptyList();
+                            }
+                        }, executor));
+                    }
+
+                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+                    for (CompletableFuture<List<Finding>> f : futures) {
+                        List<Finding> batchFindings = f.get();
+                        allFindings.addAll(batchFindings);
+                        for (Finding finding : batchFindings) {
+                            if (finding.getModuleName() != null) moduleSet.add(finding.getModuleName());
+                        }
+                    }
+                } finally {
+                    executor.shutdown();
                 }
+                log.info("Deep scan complete: {} findings from {} files in {} batches",
+                        allFindings.size(), filtered.size(), batches.size());
+            } else {
+                // 无 hash 范围且未开深度扫描：不应该到达这里（Orchestrator 会设置 root..HEAD hash）
+                // 但保留 legacy 作为兜底
+                log.info("Scan mode without deep scan flag — falling back to legacy");
+                return reviewLegacy(context);
             }
         }
 
@@ -341,6 +383,86 @@ public class CodeReviewAiService {
         }
 
         log.info("Group '{}': {} ocr comments → {} findings", group.name,
+                comments != null ? comments.size() : 0, findings.size());
+        return findings;
+    }
+
+    // ================================================================
+    // 深度扫描：分批 + code_scan
+    // ================================================================
+
+    /**
+     * 将过滤后的文件按模块分组，再按 batchSize 拆分为批次。
+     * 优先保持同模块文件在一起，大模块才切分到多个批次。
+     */
+    List<List<FileDiff>> splitIntoBatches(List<FileDiff> diffs, CodeReviewContext context, int batchSize) {
+        Map<String, ReviewGroup> groups = groupByBusinessLink(diffs, context);
+        List<List<FileDiff>> batches = new ArrayList<>();
+
+        for (ReviewGroup group : groups.values()) {
+            List<FileDiff> files = group.files;
+            if (files.size() <= batchSize) {
+                batches.add(files);
+            } else {
+                for (int i = 0; i < files.size(); i += batchSize) {
+                    batches.add(new ArrayList<>(files.subList(i, Math.min(i + batchSize, files.size()))));
+                }
+            }
+        }
+        log.info("Split {} files into {} batches (max {} per batch, {} modules)",
+                diffs.size(), batches.size(), batchSize, groups.size());
+        return batches;
+    }
+
+    /**
+     * 对一个批次的文件调用 OCR code_scan。
+     * background 中附带同批次文件列表，弥补 LLM 看不到其他批次文件的上下文损失。
+     */
+    List<Finding> reviewBatch(List<FileDiff> batch, CodeReviewContext context, String graphBg, int batchIdx) throws Exception {
+        Map<String, Object> args = new HashMap<>();
+        args.put("repo_dir", context.getRepoPath() != null ? context.getRepoPath() : "");
+
+        // 构建 background：全局架构信息（由调用方缓存传入） + 同批次文件列表
+        String bg = graphBg
+                + "\n\n## 本批次审查文件（共 " + batch.size() + " 个，批次 " + (batchIdx + 1) + "）\n"
+                + "以下文件在此次同一批次中审查，请注意它们之间的交叉引用和调用关系：\n";
+        for (FileDiff f : batch) {
+            bg += "- " + f.getFilePath()
+                    + " (" + (f.getChangeType() != null ? f.getChangeType() : "MODIFY") + ")\n";
+        }
+        args.put("background", bg);
+
+        if (getModel() != null && !getModel().isEmpty()) {
+            args.put("model", getModel());
+        }
+
+        String paths = batch.stream()
+                .map(FileDiff::getFilePath)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(","));
+        if (paths.isEmpty()) {
+            log.warn("Batch {}: no valid file paths, skipping", batchIdx + 1);
+            return Collections.emptyList();
+        }
+        args.put("path", paths);
+
+        log.info("Batch {}: calling code_scan for {} files", batchIdx + 1, batch.size());
+
+        String ocrJson = ocrmcpClient.callTool("code_scan", args);
+        OcrReviewResponse ocrResult = MAPPER.readValue(ocrJson, OcrReviewResponse.class);
+
+        List<Finding> findings = new ArrayList<>();
+        List<OcrComment> comments = ocrResult.getComments();
+        if (comments != null) {
+            for (OcrComment cm : comments) {
+                Finding f = Finding.fromOcrComment(cm);
+                String module = ModulePathResolver.resolveModule(cm.getPath());
+                f.setModuleName(module != null ? module : "other");
+                findings.add(f);
+            }
+        }
+
+        log.info("Batch {}: {} ocr comments → {} findings", batchIdx + 1,
                 comments != null ? comments.size() : 0, findings.size());
         return findings;
     }

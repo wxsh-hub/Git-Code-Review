@@ -20,6 +20,7 @@ public class DocumentRequest {
     private boolean useAiClassifier;
     private boolean useCodeReview;
     private boolean useEfficiencyAnalysis;
+    private boolean useOcrDeepScan;
     private String reviewFormat;
     private List<com.devops.ai.core.model.Category> categories;
     private int totalCommits;
@@ -154,6 +155,14 @@ public class DocumentRequest {
 
     public void setUseEfficiencyAnalysis(boolean useEfficiencyAnalysis) {
         this.useEfficiencyAnalysis = useEfficiencyAnalysis;
+    }
+
+    public boolean isUseOcrDeepScan() {
+        return useOcrDeepScan;
+    }
+
+    public void setUseOcrDeepScan(boolean useOcrDeepScan) {
+        this.useOcrDeepScan = useOcrDeepScan;
     }
 
     public String getReviewFormat() {

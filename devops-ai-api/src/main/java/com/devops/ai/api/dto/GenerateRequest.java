@@ -50,6 +50,9 @@ public class GenerateRequest {
     @Schema(description = "是否启用开发者效率分析（分析重复修改、fix vs enhance 分类）", example = "false", defaultValue = "false")
     private boolean useEfficiencyAnalysis;
 
+    @Schema(description = "是否启用 OCR 深度全量扫描（code_scan 逐文件审查全部内容，仅无 hash 范围时生效）", example = "false", defaultValue = "false")
+    private boolean useOcrDeepScan;
+
     @Schema(description = "审查文档输出格式: markdown / html", example = "markdown", defaultValue = "markdown")
     private String reviewFormat = "markdown";
 
@@ -171,6 +174,14 @@ public class GenerateRequest {
 
     public void setUseEfficiencyAnalysis(boolean useEfficiencyAnalysis) {
         this.useEfficiencyAnalysis = useEfficiencyAnalysis;
+    }
+
+    public boolean isUseOcrDeepScan() {
+        return useOcrDeepScan;
+    }
+
+    public void setUseOcrDeepScan(boolean useOcrDeepScan) {
+        this.useOcrDeepScan = useOcrDeepScan;
     }
 
     public String getReviewFormat() {

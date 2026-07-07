@@ -73,5 +73,7 @@ ocr:
   bin:
     path: "../bin/ocr.exe"  # 相对于 devops-ai 根目录的 ocr 二进制
   timeout-minutes: 30                        # 审查超时时间
+  scan-concurrency: 4                        # 深度扫描批次并发数
+  scan-batch-size: 20                        # 深度扫描每批文件数
   model: ""                                  # OCR 使用模型，空则用 llm.modelName
   fallback-on-error: true                    # OCR 出错时是否回退到旧的 CodeReviewAiService

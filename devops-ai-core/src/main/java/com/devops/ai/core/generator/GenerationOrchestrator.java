@@ -333,6 +333,7 @@ public class GenerationOrchestrator {
                 if (projectConfig != null) {
                     String reviewSinceHash = emptyToNull(request.getSinceHash());
                     String reviewUntilHash = emptyToNull(request.getUntilHash());
+                    boolean isDeepScan = request.isUseOcrDeepScan();
 
                     // If no hash range provided, scan the entire project from root commit
                     if (reviewSinceHash == null && reviewUntilHash == null) {
@@ -346,7 +347,8 @@ public class GenerationOrchestrator {
                         if (rootHash != null) {
                             reviewSinceHash = rootHash;
                             reviewUntilHash = "HEAD";
-                            log.info("Full project scan: diff from root commit {} to HEAD", rootHash);
+                            log.info("{}: diff from root commit {} to HEAD",
+                                    isDeepScan ? "Deep scan mode" : "Full project scan", rootHash);
                         }
                     } else if (reviewSinceHash == null || reviewUntilHash == null) {
                         // One of the hashes is missing — derive from commits
@@ -375,21 +377,31 @@ public class GenerationOrchestrator {
                         reviewContext.setFileDiffs(diffs);
                         reviewContext.setGraphAnalysisJson(graphJson);
                         reviewContext.setRepoPath(repoPath);  // 传给 OCR MCP server
-                        reviewContext.setSinceHash(reviewSinceHash);   // 用于 code_review_diff
-                        reviewContext.setUntilHash(reviewUntilHash);   // 用于 code_review_diff
+                        if (isDeepScan) {
+                            // 深度扫描：不设置 hash，让 CodeReviewAiService 进入 code_scan 模式
+                            reviewContext.setSinceHash(null);
+                            reviewContext.setUntilHash(null);
+                        } else {
+                            reviewContext.setSinceHash(reviewSinceHash);   // 用于 code_review_diff
+                            reviewContext.setUntilHash(reviewUntilHash);   // 用于 code_review_diff
+                        }
+                        reviewContext.setUseOcrDeepScan(isDeepScan);
 
                         // --- Phase 4: ReviewScope 判定 + 上下文初始化 ---
                         reviewContext.setReviewDate(new Date());
 
                         // ReviewScope 判定
-                        boolean hasHash = reviewSinceHash != null && reviewUntilHash != null;
                         int commitCount = commits != null ? commits.size() : 0;
                         reviewContext.setCommitCount(commitCount);
 
-                        if (hasHash && commitCount == 1) {
+                        if (isDeepScan) {
+                            // 深度扫描：上下文 hash 为 null，走 code_scan 逐文件审查全部内容
+                            reviewContext.setReviewScope(ReviewScope.FULL_SCAN);
+                            reviewContext.setScopeDescription("全量深度扫描（逐文件审查全部代码内容）");
+                        } else if (commitCount == 1) {
                             reviewContext.setReviewScope(ReviewScope.DIFF_REVIEW);
                             reviewContext.setScopeDescription("本次 diff 审查（1 个 commit）");
-                        } else if (hasHash && commitCount > 1) {
+                        } else if (commitCount > 1) {
                             reviewContext.setReviewScope(ReviewScope.BRANCH_REVIEW);
                             // 生成范围描述文本
                             String sinceDate = "?";
