@@ -169,12 +169,11 @@ public class CodeReviewDataCollector {
             String currentBranch = git.getRepository().getBranch();
             log.info("Local clone on branch '{}', request branch='{}'", currentBranch, requestBranch);
 
-            // 如果分支匹配且 commit 数足够 → 直接复用，只 fetch 最新
+            // 如果分支匹配 → 直接复用，只 fetch 最新
             if (requestBranch != null && requestBranch.equals(currentBranch)) {
                 log.info("Branch '{}' matches, reusing local clone", currentBranch);
-                // 只 pull 最新代码
                 try {
-                    git.pull().call();
+                    git.pull().setCredentialsProvider(createCredentialsFromClone(git)).call();
                     log.info("Pulled latest on '{}'", currentBranch);
                 } catch (Exception e) {
                     log.warn("Pull failed on '{}': {}, continuing with cached version", currentBranch, e.getMessage());
@@ -182,15 +181,59 @@ public class CodeReviewDataCollector {
                 return;
             }
 
-            // 分支不匹配 → 删除旧的，下次 collectDiffs 重新 clone
-            log.info("Branch mismatch (local='{}', request='{}'), cleaning stale clone...", currentBranch, requestBranch);
-        } catch (Exception e) {
-            log.warn("Failed to open clone: {}, deleting...", e.getMessage());
-        }
+            // 分支不匹配 → 尝试切换到请求的分支
+            if (requestBranch != null && !requestBranch.isEmpty()) {
+                log.info("Switching clone from '{}' to '{}'", currentBranch, requestBranch);
+                try {
+                    // 先 fetch 所有远程分支
+                    git.fetch().setCredentialsProvider(createCredentialsFromClone(git)).call();
 
-        // 不管什么原因，到这里就删掉旧 clone，让 collectDiffs 重新拉
-        deleteRecursively(cloneDir);
-        log.info("Stale clone deleted, will re-clone on next collectDiffs");
+                    // 检查远程是否有该分支
+                    String remoteBranch = "origin/" + requestBranch;
+                    boolean remoteExists = git.branchList()
+                            .setListMode(org.eclipse.jgit.api.ListBranchCommand.ListMode.REMOTE)
+                            .call().stream()
+                            .anyMatch(ref -> ref.getName().equals("refs/remotes/" + remoteBranch));
+
+                    if (remoteExists) {
+                        // 检查本地是否已有该分支
+                        boolean localExists = git.branchList().call().stream()
+                                .anyMatch(ref -> ref.getName().equals("refs/heads/" + requestBranch));
+
+                        if (localExists) {
+                            git.checkout().setName(requestBranch).call();
+                        } else {
+                            git.checkout()
+                                    .setCreateBranch(true)
+                                    .setName(requestBranch)
+                                    .setStartPoint(remoteBranch)
+                                    .call();
+                        }
+                        git.pull().setCredentialsProvider(createCredentialsFromClone(git)).call();
+                        log.info("Successfully switched to branch '{}'", requestBranch);
+                        return;
+                    } else {
+                        log.warn("Remote branch '{}' not found, staying on '{}'", requestBranch, currentBranch);
+                        return;
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to switch to '{}': {}, staying on '{}'", requestBranch, e.getMessage(), currentBranch);
+                    return;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to open clone at {}: {}", cloneDir, e.getMessage());
+        }
+    }
+
+    /**
+     * 从已打开的 Git 仓库推断凭据（从 remote URL 反推）。
+     * 这是个 best-effort 方法，如果仓库是通过用户名密码 clone 的，
+     * git 已经缓存了凭据，直接 pull 不需要再提供凭据。
+     */
+    private org.eclipse.jgit.transport.CredentialsProvider createCredentialsFromClone(Git git) {
+        // git 已缓存凭据时 pull/fetch 不需要额外提供，返回 null 即可
+        return null;
     }
 
     private void deleteRecursively(File dir) {

@@ -235,11 +235,16 @@ public class ReviewLlmService {
         f.setStatus(FindingStatus.fromConfidence(finalConfidence));
 
         // review LLM 的结构化 severity/category 覆盖关键词推断值
+        // 只有当 review LLM 输出了真正的分类码时才覆盖，避免 "P0""P1" 等
+        // severity 值被 fromCode 误当成 OTHER 覆盖掉正确的 SECRET_EXPOSURE 等
         if (output.severity != null) {
             f.setSeverity(FindingSeverity.fromLevel(output.severity));
         }
         if (output.category != null) {
-            f.setCategory(FindingCategory.fromCode(output.category));
+            FindingCategory cat = FindingCategory.fromCode(output.category);
+            if (cat != FindingCategory.OTHER) {
+                f.setCategory(cat);
+            }
         }
 
         f.setReviewConclusion(output.reason);

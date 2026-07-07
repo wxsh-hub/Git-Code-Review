@@ -259,7 +259,7 @@ public class ReviewReportGenerator {
 
             // Metadata table
             String handler = f.getCandidateHandler() != null && !f.getCandidateHandler().isEmpty()
-                    ? f.getCandidateHandler() : "待指派";
+                    ? f.getCandidateHandler() : "";
             String reviewer = f.getReviewer() != null ? f.getReviewer() + " ✓" : "-";
             String deadline = computeDeadline(f.getSeverity(), context.getReviewDate());
             String confPct = String.format("%.1f%%", f.getConfidence() * 100);

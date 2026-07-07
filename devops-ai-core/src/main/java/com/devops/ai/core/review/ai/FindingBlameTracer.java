@@ -46,7 +46,6 @@ public class FindingBlameTracer {
 
         for (Finding f : findings) {
             if (!isHighSeverity(f.getSeverity())) {
-                f.setCandidateHandler("待指派");
                 skipped++;
                 continue;
             }
@@ -57,7 +56,6 @@ public class FindingBlameTracer {
                 f.setOwner(handler);
                 traced++;
             } else {
-                f.setCandidateHandler("待指派");
                 skipped++;
             }
         }
@@ -108,6 +106,7 @@ public class FindingBlameTracer {
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add("git");
+            cmd.add("log");
             cmd.addAll(Arrays.asList(args));
 
             ProcessBuilder pb = new ProcessBuilder(cmd);
