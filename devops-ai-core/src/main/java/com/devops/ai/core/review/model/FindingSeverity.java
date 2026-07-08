@@ -83,8 +83,8 @@ public enum FindingSeverity {
      * <h3>映射规则</h3>
      * <ul>
      *   <li>P0 阻断：安全漏洞、敏感信息暴露</li>
-     *   <li>P1 高危：空指针、事务边界、并发安全、资源泄漏、异常处理不当</li>
-     *   <li>P2 中危：性能问题、依赖风险、架构问题、逻辑错误</li>
+     *   <li>P1 高危：空指针、事务边界、并发安全、资源泄漏、异常处理不当、编译错误、架构问题、逻辑错误</li>
+     *   <li>P2 中危：性能问题、依赖风险</li>
      *   <li>P3 低危：硬编码、代码风格</li>
      *   <li>P4 信息：其他未归类问题</li>
      * </ul>
@@ -104,6 +104,7 @@ public enum FindingSeverity {
             case RESOURCE_LEAK:
             case ERROR_HANDLING:
             case ARCHITECTURE:    // 循环依赖/分层违规 — 结构性缺陷，影响面广
+            case COMPILE_ERROR:   // 编译错误 — 直接阻断构建
             case LOGIC_ERROR:     // 业务逻辑缺陷 — 直接产生错误结果
                 return HIGH;
 
