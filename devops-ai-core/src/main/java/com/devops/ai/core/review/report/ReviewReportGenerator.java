@@ -287,7 +287,8 @@ public class ReviewReportGenerator {
 
             // Trigger
             if (f.getTrigger() != null && !f.getTrigger().isEmpty()) {
-                sb.append("> **触发条件：** ").append(f.getTrigger()).append("\n\n");
+                sb.append("> **触发条件：**\n> ```\n> ")
+                        .append(f.getTrigger().replace("\n", "\n> ")).append("\n> ```\n\n");
             }
 
             // Suggested fix
