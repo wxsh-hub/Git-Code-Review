@@ -18,7 +18,7 @@ public enum FindingCategory {
     PERFORMANCE("性能问题", "算法效率、N+1查询、内存占用"),
     DEPENDENCY("依赖风险", "过期/漏洞/SNAPSHOT版本"),
     ARCHITECTURE("架构问题", "循环依赖/分层违规"),
-    COMPILE_ERROR("编译错误", "语法错误/类型不匹配/引用未定义/注解误用"),
+    COMPILE_ERROR("编译错误", "语法错误/类型不匹配/引用未定义/字段缺失/方法签名变更/注解误用"),
     LOGIC_ERROR("逻辑错误", "业务逻辑缺陷"),
     HARDCODED("硬编码", "魔法数字、写死的配置"),
     DEAD_CODE("冗余/死代码", "无用变量/方法、永远不执行的分支、重复代码块"),
@@ -95,7 +95,11 @@ public enum FindingCategory {
                 || lower.contains("compile") || lower.contains("无法编译")
                 || lower.contains("缺少引号") || lower.contains("缺少分号")
                 || lower.contains("闭合引号") || lower.contains("未定义")
-                || lower.contains("类型不匹配") || lower.contains("typo")) {
+                || lower.contains("类型不匹配") || lower.contains("typo")
+                || lower.contains("字段缺失") || lower.contains("缺少字段")
+                || lower.contains("字段不匹配") || lower.contains("属性不存在")
+                || lower.contains("invalid property") || lower.contains("方法签名")
+                || lower.contains("调用方未") || lower.contains("编译错误")) {
             return COMPILE_ERROR;
         }
         if (lower.contains("逻辑") || lower.contains("bug") || lower.contains("缺陷")
