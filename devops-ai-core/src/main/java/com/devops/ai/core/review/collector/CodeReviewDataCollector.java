@@ -148,32 +148,26 @@ public class CodeReviewDataCollector {
     }
 
     /**
-     * 确保本地 clone 仓库的当前分支正确，否则删除让下次重新拉取。
-     *
-     * <p>设计思路：
-     * <ol>
-     *   <li>检查本地是否已有 clone</li>
-     *   <li>如果已存在且当前分支 == 请求分支 → 复用，只 fetch 增量</li>
-     *   <li>如果已存在但分支不对 → 删除整个 clone，下次 collectDiffs 会重新 clone 到正确分支</li>
-     *   <li>如果请求的分支是 main（通常是 squash 分支），检测 commit 数太少时，
-     *       自动找 dev/master 等完整历史分支做 blame，保持 diff 不受影响</li>
-     * </ol>
+     * 确保本地 clone 仓库切到正确的分支。
      *
      * @param cloneDir      clone 目录
      * @param requestBranch 请求中指定的分支
+     * @param config        项目配置（用于创建认证凭据）
      */
-    public void checkoutBranch(File cloneDir, String requestBranch) {
+    public void checkoutBranch(File cloneDir, String requestBranch, ProjectConfig config) {
         if (!cloneDir.exists()) return;
 
         try (Git git = Git.open(cloneDir)) {
             String currentBranch = git.getRepository().getBranch();
             log.info("Local clone on branch '{}', request branch='{}'", currentBranch, requestBranch);
 
-            // 如果分支匹配 → 直接复用，只 fetch 最新
+            UsernamePasswordCredentialsProvider credentials = createCredentials(config);
+
+            // 如果分支匹配 → 直接复用，只 pull 最新
             if (requestBranch != null && requestBranch.equals(currentBranch)) {
                 log.info("Branch '{}' matches, reusing local clone", currentBranch);
                 try {
-                    git.pull().setCredentialsProvider(createCredentialsFromClone(git)).call();
+                    git.pull().setCredentialsProvider(credentials).call();
                     log.info("Pulled latest on '{}'", currentBranch);
                 } catch (Exception e) {
                     log.warn("Pull failed on '{}': {}, continuing with cached version", currentBranch, e.getMessage());
@@ -186,7 +180,7 @@ public class CodeReviewDataCollector {
                 log.info("Switching clone from '{}' to '{}'", currentBranch, requestBranch);
                 try {
                     // 先 fetch 所有远程分支
-                    git.fetch().setCredentialsProvider(createCredentialsFromClone(git)).call();
+                    git.fetch().setCredentialsProvider(credentials).call();
 
                     // 检查远程是否有该分支
                     String remoteBranch = "origin/" + requestBranch;
@@ -209,7 +203,7 @@ public class CodeReviewDataCollector {
                                     .setStartPoint(remoteBranch)
                                     .call();
                         }
-                        git.pull().setCredentialsProvider(createCredentialsFromClone(git)).call();
+                        git.pull().setCredentialsProvider(credentials).call();
                         log.info("Successfully switched to branch '{}'", requestBranch);
                         return;
                     } else {
@@ -224,16 +218,6 @@ public class CodeReviewDataCollector {
         } catch (Exception e) {
             log.warn("Failed to open clone at {}: {}", cloneDir, e.getMessage());
         }
-    }
-
-    /**
-     * 从已打开的 Git 仓库推断凭据（从 remote URL 反推）。
-     * 这是个 best-effort 方法，如果仓库是通过用户名密码 clone 的，
-     * git 已经缓存了凭据，直接 pull 不需要再提供凭据。
-     */
-    private org.eclipse.jgit.transport.CredentialsProvider createCredentialsFromClone(Git git) {
-        // git 已缓存凭据时 pull/fetch 不需要额外提供，返回 null 即可
-        return null;
     }
 
     private void deleteRecursively(File dir) {

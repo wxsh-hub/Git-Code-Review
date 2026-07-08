@@ -100,7 +100,9 @@ public class FindingBlameTracer {
     }
 
     /**
-     * 执行 git 命令，返回第一行输出（去首尾空白）。
+     * 执行 git log 命令，仅返回第一行（作者名）。
+     * 因为 -L 会在作者名后面附带完整 diff，这里只取第一行即可。
+     * 仅在退出码为 0 时返回结果，否则返回 null 并将错误输出记入日志。
      */
     private String gitLog(String repoPath, String... args) {
         try {
@@ -114,20 +116,33 @@ public class FindingBlameTracer {
             pb.redirectErrorStream(true);
 
             Process process = pb.start();
+            String firstLine = null;
+            StringBuilder errOut = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                StringBuilder out = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    if (out.length() > 0) out.append(" ");
-                    out.append(line);
+                    if (firstLine == null) {
+                        firstLine = line.trim();
+                    } else {
+                        if (errOut.length() > 0) errOut.append(" ");
+                        errOut.append(line);
+                    }
                 }
-                process.waitFor();
-                String result = out.toString().trim();
-                return result.isEmpty() ? null : result;
             }
+            int exitCode = process.waitFor();
+
+            if (exitCode != 0) {
+                String full = (firstLine != null ? firstLine + " " : "") + errOut.toString();
+                log.warn("git log failed (exit={}) in repo {}: args={}, output={}",
+                        exitCode, repoPath, Arrays.asList(args),
+                        full.length() > 200 ? full.substring(0, 200) + "..." : full);
+                return null;
+            }
+
+            return (firstLine != null && !firstLine.isEmpty()) ? firstLine : null;
         } catch (Exception e) {
-            log.debug("git log failed for {}: {}", repoPath, e.getMessage());
+            log.warn("git log execution failed for {}: {}", repoPath, e.getMessage());
             return null;
         }
     }
