@@ -99,7 +99,10 @@ public enum FindingCategory {
                 || lower.contains("字段缺失") || lower.contains("缺少字段")
                 || lower.contains("字段不匹配") || lower.contains("属性不存在")
                 || lower.contains("invalid property") || lower.contains("方法签名")
-                || lower.contains("调用方未") || lower.contains("编译错误")) {
+                || lower.contains("调用方未") || lower.contains("编译错误")
+                || lower.contains("缺失字段") || lower.contains("缺失多个")
+                || lower.contains("不完整") || lower.contains("非法范围")
+                || lower.contains("包路径错误") || lower.contains("找不到主类")) {
             return COMPILE_ERROR;
         }
         if (lower.contains("逻辑") || lower.contains("bug") || lower.contains("缺陷")

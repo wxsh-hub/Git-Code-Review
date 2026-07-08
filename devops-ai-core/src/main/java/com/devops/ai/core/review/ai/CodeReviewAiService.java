@@ -558,8 +558,8 @@ public class CodeReviewAiService {
         sb.append("**审查清单 — 请逐项检查每处变更，发现问题时在 category 字段标注对应代码**：\n\n");
         sb.append("⚠️ **分类优先级（当一个问题命中多个分类时，选优先级最高的）**：\n");
         sb.append("  SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK >\n");
-        sb.append("  ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE > DEPENDENCY >\n");
-        sb.append("  HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n");
+        sb.append("  ERROR_HANDLING > ARCHITECTURE > COMPILE_ERROR > LOGIC_ERROR > PERFORMANCE >\n");
+        sb.append("  DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n");
         sb.append("  例：`@GetMapping` 做写操作且缺少权限校验 → SECURITY（不是 CODE_STYLE）\n");
         sb.append("  例：硬编码了密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
         sb.append("P0 阻断（必须检查，发现即阻断）：\n");
