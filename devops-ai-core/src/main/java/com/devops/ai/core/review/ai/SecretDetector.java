@@ -13,7 +13,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 敏感信息检测器，在审查完成后对 Finding 文本字段做 11 条规则扫描和脱敏。
+ * 敏感信息检测器，在审查完成后对 Finding 文本字段做 12 条规则扫描和脱敏。
  *
  * <p>处理流程：
  * <ol>
@@ -113,6 +113,13 @@ public class SecretDetector {
                 "-----BEGIN\\s*(RSA |EC |DSA |OPENSSH |)PRIVATE KEY-----.*?-----END\\s*\\1?PRIVATE KEY-----",
                 Pattern.CASE_INSENSITIVE | Pattern.DOTALL,
                 "代码中包含 PEM 格式私钥");
+
+        // 12. 中文描述中的明文凭据（如 "密码'Gxx@6228'""uapPassword 的明文密码"xxx""）
+        // 匹配：密码/口令/凭据/secret/key + 中文描述 + 引号内的值
+        addRule("chinese_context_password",
+                "(密码|口令|凭据|password|secret|token|apiKey|accessKey|密钥|密文)\\s*(的\\S*为?|为|是|:|：)\\s*['\"]([^'\"]+)['\"]",
+                Pattern.CASE_INSENSITIVE,
+                "中文描述中泄露了明文凭据");
     }
 
     private void addRule(String name, String regex, String description) {
@@ -281,7 +288,14 @@ public class SecretDetector {
     /** 构建替换文本：保留前缀，凭据值替换为 *** */
     private String buildReplacement(Matcher m) {
         String matched = m.group();
-        // 私钥块特殊处理：正则已匹配完整 PEM 块（含 body + END 行），整体替换
+
+        // 中文描述凭据规则：将引号内的值替换为 ***，保留前后文
+        if (matched.matches(".*(密码|口令|凭据|password|secret|token|apiKey|accessKey|密钥|密文).*['\"].*['\"].*")) {
+            // 替换所有引号内的值为 ***
+            return matched.replaceAll("['\"]([^'\"]+)['\"]", "'***'");
+        }
+
+        // 私钥块特殊处理：正则已匹配完整 PEM 块，整体替换
         if (matched.startsWith("-----BEGIN")) {
             int firstNL = matched.indexOf('\n');
             String beginLine = matched.substring(0, firstNL > 0 ? firstNL : matched.length());

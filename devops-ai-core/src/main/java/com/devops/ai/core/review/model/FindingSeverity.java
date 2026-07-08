@@ -115,6 +115,7 @@ public enum FindingSeverity {
             // P3 低危
             case HARDCODED:
             case CODE_STYLE:
+            case DEAD_CODE:       // 冗余/死代码 — 不直接导致故障但需清理
                 return LOW;
 
             // P4 信息

@@ -71,11 +71,11 @@ public class ReviewLlmService {
             "confidence 评分规则：\n" +
             "- 使用精确的小数值（如 0.87、0.63、0.91），不要四舍五入到 0.05 的整数倍\n" +
             "- 这个分数代表你对该问题「确实是缺陷」的把握程度\n" +
-            "- 0.95+ = 几乎确定是缺陷（有明确代码证据，diff 中就能证实）\n" +
-            "- 0.70-0.85 = 很可能有缺陷（从代码模式推断，虽然不是 100% 确定但大概率有问题）\n" +
-            "- 0.50-0.69 = 可能是缺陷或设计不佳（需要推测、有不确定性）\n" +
+            "- 0.85+ = 几乎确定是缺陷（有明确代码证据，diff 中就能证实）\n" +
+            "- 0.70-0.84 = 有缺陷趋势/特征，但从 diff 无法完全证实（如代码模式可疑但缺少上下文）\n" +
+            "- 0.50-0.69 = 可能是缺陷或设计不佳（需要较多推测、有不确定性）\n" +
             "- 0.30-0.49 = 大概率不是缺陷（纯猜测/不确定/「可能有风险」/「建议检查」→ 给这个分数）\n" +
-            "- **如果你在 reason 中写了「可能」「也许」「不确定」「需要验证」「建议检查」「不清楚」，confidence 必须 ≤ 0.55**";
+            "- **如果你在 reason 中写了「可能」「也许」「不确定」「需要验证」「建议检查」「不清楚」，confidence 必须 ≤ 0.70**";
 
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
@@ -370,7 +370,7 @@ public class ReviewLlmService {
         // 代码侧兜底：review LLM 表达了不确定 → 强制压低置信度
         // 不管 LLM 给的 confidence 多高，reason 里有不确定词汇就说明它自己都没把握
         if (output.reason != null && containsUncertaintyMarkers(output.reason)) {
-            finalConfidence = Math.min(finalConfidence, 0.55);
+            finalConfidence = Math.min(finalConfidence, 0.70);
             log.debug("Confidence capped at {} due to uncertainty markers in reason: {}",
                     finalConfidence,
                     output.reason.length() > 80 ? output.reason.substring(0, 80) + "..." : output.reason);

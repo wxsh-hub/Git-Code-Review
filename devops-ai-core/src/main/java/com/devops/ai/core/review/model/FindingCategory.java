@@ -20,6 +20,7 @@ public enum FindingCategory {
     ARCHITECTURE("架构问题", "循环依赖/分层违规"),
     LOGIC_ERROR("逻辑错误", "业务逻辑缺陷"),
     HARDCODED("硬编码", "魔法数字、写死的配置"),
+    DEAD_CODE("冗余/死代码", "无用变量/方法、永远不执行的分支、重复代码块"),
     OTHER("其他", "暂未归类的问题");
 
     private final String label;
@@ -96,6 +97,11 @@ public enum FindingCategory {
         if (lower.contains("硬编码") || lower.contains("hardcode") || lower.contains("魔法")
                 || lower.contains("magic number") || lower.contains("写死")) {
             return HARDCODED;
+        }
+        if (lower.contains("冗余") || lower.contains("死代码") || lower.contains("无用") || lower.contains("未使用")
+                || lower.contains("冗余代码") || lower.contains("dead code") || lower.contains("unused")
+                || lower.contains("重复代码") || lower.contains("用不到") || lower.contains("多余")) {
+            return DEAD_CODE;
         }
         return OTHER;
     }
