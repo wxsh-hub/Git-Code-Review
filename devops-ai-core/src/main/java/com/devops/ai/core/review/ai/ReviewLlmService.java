@@ -57,7 +57,8 @@ public class ReviewLlmService {
             "判断标准：\n" +
             "1. 区分「代码缺陷」和「代码风格/设计偏好」——风格问题不是缺陷\n" +
             "2. 区分「代码缺陷」和「需求变更后的代码」——被修改的代码不一定是 bug\n" +
-            "3. 判断严重度时从风险角度考虑：是否会导致线上故障、数据丢失或安全漏洞\n\n" +
+            "3. 判断严重度时从风险角度考虑：是否会导致线上故障、数据丢失或安全漏洞\n" +
+            "4. diff 模式只能看到变更部分，未变更代码不可见 —— 不要因为「没看到定义」就判定不存在\n\n" +
             "输出必须是合法 JSON，不要包含 markdown 代码块标记：\n" +
             "{\n" +
             "  \"confidence\": 0.82,\n" +
@@ -70,8 +71,11 @@ public class ReviewLlmService {
             "confidence 评分规则：\n" +
             "- 使用精确的小数值（如 0.87、0.63、0.91），不要四舍五入到 0.05 的整数倍\n" +
             "- 这个分数代表你对该问题「确实是缺陷」的把握程度\n" +
-            "- 0.95+ = 几乎确定是缺陷，0.70-0.85 = 很可能有缺陷，" +
-            "0.50-0.69 = 可能是缺陷或设计不佳，0.30-0.49 = 大概率不是缺陷";
+            "- 0.95+ = 几乎确定是缺陷（有明确代码证据，diff 中就能证实）\n" +
+            "- 0.70-0.85 = 很可能有缺陷（从代码模式推断，虽然不是 100% 确定但大概率有问题）\n" +
+            "- 0.50-0.69 = 可能是缺陷或设计不佳（需要推测、有不确定性）\n" +
+            "- 0.30-0.49 = 大概率不是缺陷（纯猜测/不确定/「可能有风险」/「建议检查」→ 给这个分数）\n" +
+            "- **如果你在 reason 中写了「可能」「也许」「不确定」「需要验证」「建议检查」「不清楚」，confidence 必须 ≤ 0.55**";
 
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
@@ -363,6 +367,15 @@ public class ReviewLlmService {
         double originalConfidence = f.getConfidence();
         double finalConfidence = (originalConfidence + output.confidence) / 2.0;
 
+        // 代码侧兜底：review LLM 表达了不确定 → 强制压低置信度
+        // 不管 LLM 给的 confidence 多高，reason 里有不确定词汇就说明它自己都没把握
+        if (output.reason != null && containsUncertaintyMarkers(output.reason)) {
+            finalConfidence = Math.min(finalConfidence, 0.55);
+            log.debug("Confidence capped at {} due to uncertainty markers in reason: {}",
+                    finalConfidence,
+                    output.reason.length() > 80 ? output.reason.substring(0, 80) + "..." : output.reason);
+        }
+
         f.setConfidence(finalConfidence);
         f.setStatus(FindingStatus.fromConfidence(finalConfidence));
 
@@ -467,6 +480,19 @@ public class ReviewLlmService {
     private String formatCategory(FindingCategory c) {
         if (c == null) return "未知";
         return c.getLabel();
+    }
+
+    /** 检测 reason 中是否包含不确定表述（AI 自己都没把握） */
+    static boolean containsUncertaintyMarkers(String text) {
+        if (text == null || text.isEmpty()) return false;
+        // 中文不确定表述
+        return text.contains("可能") || text.contains("也许") || text.contains("不确定")
+                || text.contains("需要验证") || text.contains("建议检查") || text.contains("不清楚")
+                || text.contains("不明确") || text.contains("或在") || text.contains("不一定")
+                || text.contains("需确认") || text.contains("怀疑") || text.contains("猜测")
+                // 英文不确定表述
+                || text.contains("might") || text.contains("may ") || text.contains("uncertain")
+                || text.contains("unclear") || text.contains("possibly") || text.contains("not sure");
     }
 
     // ================================================================

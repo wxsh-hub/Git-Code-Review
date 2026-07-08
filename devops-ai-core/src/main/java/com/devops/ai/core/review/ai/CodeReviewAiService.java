@@ -523,6 +523,20 @@ public class CodeReviewAiService {
         }
 
         sb.append("## 审查要求\n\n");
+        sb.append("⚠️ **Diff 模式禁区（严禁报告的误判类型）**：\n");
+        sb.append("- **严禁报告「类/Bean/方法/字段不存在」** — 你只能看到变更文件，未变更的代码对你不可见。\n");
+        sb.append("  看到 @Autowired 的 bean 在 diff 中找不到定义 → 不代表不存在，不要报。\n");
+        sb.append("  看到 import 了某个类但在 diff 中看不到 → 正常，不要报。\n");
+        sb.append("  看到 @Async(\"xxx\") 但 diff 中没有 Executor bean → 大概率在其他文件定义了，不要报。\n");
+        sb.append("- **严禁报告「依赖版本升级的风险」除非你能从 diff 中确认真的不兼容** — \n");
+        sb.append("  版本号变了不代表有问题。只有当你看到新版本 API 确实与调用代码不兼容时才能报。\n");
+        sb.append("  如果只是版本号变了但不确定影响，不要报 —— 你的 confidence 应该 < 0.5。\n\n");
+        sb.append("**置信度校准规则**：\n");
+        sb.append("- 确定是缺陷（有明确证据、diff 中就能证实的）→ confidence 0.80-0.99\n");
+        sb.append("- 可能是缺陷（需要推测但不能完全确定）→ confidence 0.50-0.69\n");
+        sb.append("- 纯猜测/不确定/「可能有风险」/「建议检查」→ **不要报**，这不是代码审查要做的事\n");
+        sb.append("- 如果你在 content 中写了「可能」「也许」「不确定」「需要验证」「建议检查是否有」，\n");
+        sb.append("  说明你自己都不确定，此时 confidence 必须 ≤ 0.55\n\n");
         sb.append("请逐文件逐行审查以上代码变更，输出严格的结构化 JSON。\n\n");
         sb.append("**输出格式**（一个 JSON 对象，不要 markdown 代码块标记）：\n");
         sb.append("```\n");
@@ -858,8 +872,12 @@ public class CodeReviewAiService {
     List<Finding> runPipeline(List<Finding> findings, CodeReviewContext context) {
         if (findings == null || findings.isEmpty()) return Collections.emptyList();
 
+        // ===== Phase 5: 交叉验证前去重（同文件+同行号+同分类 → 合并）=====
+        // 避免跨模块组产生的重复 Finding 浪费 review LLM 调用
+        List<Finding> deduped = dedupBeforePipeline(findings);
+
         // ===== Phase 5: Blame 追溯（P0/P1/P2）=====
-        List<Finding> traced = findingBlameTracer.trace(findings, context.getRepoPath());
+        List<Finding> traced = findingBlameTracer.trace(deduped, context.getRepoPath());
 
         // ===== Phase 6: 双 LLM 交叉验证（P0/P1/P2）=====
         List<Finding> validated = reviewLlmService.crossValidate(traced, context);
@@ -874,10 +892,46 @@ public class CodeReviewAiService {
         // 追加 SecretDetector 新产出的 SECRET_EXPOSURE Finding
         verified.addAll(newSecretFindings);
 
-        log.info("Pipeline complete: {} findings → {} after verify + {} secret → {} total",
-                findings.size(), verified.size() - newSecretFindings.size(),
+        int dupedCount = findings.size() - deduped.size();
+        log.info("Pipeline complete: {} findings ({} deduped) → {} after verify + {} secret → {} total",
+                findings.size(), dupedCount, verified.size() - newSecretFindings.size(),
                 newSecretFindings.size(), verified.size());
         return verified;
+    }
+
+    /**
+     * 管线前去重：同文件 + 同行号范围 + 同分类 的 Finding 合并为一条。
+     * 只做确定性去重（不丢信息），误报/置信度判定留给下游。
+     */
+    private List<Finding> dedupBeforePipeline(List<Finding> findings) {
+        Map<String, Finding> seen = new LinkedHashMap<>();
+        int dupes = 0;
+        for (Finding f : findings) {
+            String key = dedupKey(f);
+            Finding existing = seen.get(key);
+            if (existing != null) {
+                dupes++;
+                // 保留证据链更丰富的（更长的 evidence）
+                if (f.getEvidence() != null && (existing.getEvidence() == null
+                        || f.getEvidence().length() > existing.getEvidence().length())) {
+                    seen.put(key, f);
+                }
+            } else {
+                seen.put(key, f);
+            }
+        }
+        if (dupes > 0) {
+            log.info("Pipeline pre-dedup: removed {} duplicates, {} → {}",
+                    dupes, findings.size(), seen.size());
+        }
+        return new ArrayList<>(seen.values());
+    }
+
+    /** 去重键：文件 + 起始行 + 结束行 + 分类 */
+    private static String dedupKey(Finding f) {
+        String cat = f.getCategory() != null ? f.getCategory().name() : "?";
+        return (f.getFile() != null ? f.getFile() : "?") + "#L"
+                + f.getStartLine() + "-" + f.getEndLine() + "#" + cat;
     }
 
     // ================================================================
