@@ -166,18 +166,33 @@ public class Finding {
         f.suggestedFix = oc.getSuggestionCode();
         f.reviewConclusion = oc.getThinking();
 
-        // 从评论内容推断严重级别和分类（Phase 2 会通过 LLM 输出替换）
+        // 优先使用 LLM 输出的 category（精确分类），否则从内容关键词推断
         String content = oc.getContent();
         if (content != null) {
             f.trigger = content; // OCR 的 content 描述问题本身
-            f.severity = FindingSeverity.fromDescription(content);
-            f.category = FindingCategory.fromDescription(content);
         }
+        f.category = resolveCategory(oc, content);
+        f.severity = FindingSeverity.fromCategory(f.category);
         // OCR 初始置信度（未经复核，故意用非整数避免取整效果）
         f.confidence = 0.73;
         f.status = FindingStatus.UNREVIEWED; // 等待 Phase 6 交叉验证
 
         return f;
+    }
+
+    /**
+     * 解析问题分类：优先使用 LLM 输出的 category 字段（精确），
+     * 识别失败时回退到内容关键词推断（兼容旧 prompt 输出）。
+     */
+    private static FindingCategory resolveCategory(OcrComment oc, String content) {
+        // Level 1: LLM 明确输出了分类字段
+        String catField = oc.getCategory();
+        if (catField != null && !catField.trim().isEmpty()) {
+            FindingCategory cat = FindingCategory.fromCode(catField);
+            if (cat != FindingCategory.OTHER) return cat;
+        }
+        // Level 2: 关键词推断（兼容旧输出）
+        return FindingCategory.fromDescription(content);
     }
 
     /**

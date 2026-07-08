@@ -186,6 +186,14 @@ public class GenerationOrchestrator {
         if (request.isIncremental()) {
             String formSinceHash = emptyToNull(request.getSinceHash());
             String formUntilHash = emptyToNull(request.getUntilHash());
+
+            // === TEMPORARY: 硬编码增量 commit 范围用于测试 ===
+            if ("dig-master".equals(request.getProjectName()) && formSinceHash == null) {
+                formSinceHash = "e49ed8f5";
+                log.info("Incremental commits [HARDCODED]: from e49ed8f5 for testing");
+            }
+            // =================================================
+
             List<Commit> incrementalCommits = incrementalManager.getIncrementalCommits(
                     request.getProjectId(), request.getBranch(), formSinceHash, formUntilHash);
             if (incrementalCommits == null) {
@@ -336,6 +344,16 @@ public class GenerationOrchestrator {
                     boolean isDeepScan = request.isUseOcrDeepScan();
 
                     // If no hash range provided, first try incremental tracker, then fall back to full scan
+                    // ================================================================
+                    // === TEMPORARY: 硬编码 dig-master 增量测试范围，始终用同一 base ===
+                    // === 调试通过后删除此段，恢复正常的 tracker 逻辑 ================
+                    if ("dig-master".equals(request.getProjectName()) && request.isIncremental()) {
+                        reviewSinceHash = "e49ed8f5";
+                        reviewUntilHash = "HEAD";
+                        log.info("Incremental diff [HARDCODED]: from e49ed8f5 to HEAD for testing");
+                    }
+                    // ================================================================
+
                     if (reviewSinceHash == null && reviewUntilHash == null) {
                         if (request.isIncremental()) {
                             String pid = request.getProjectId();
@@ -380,11 +398,8 @@ public class GenerationOrchestrator {
                         // 确保 clone 在正确的分支上，否则 git blame 只看到 squash 后的历史
                         codeReviewDataCollector.checkoutBranch(cloneDir, request.getBranch(), projectConfig);
 
-                        // Run code-review-graph static analysis
-                        String graphJson = codeReviewGraphEngine.analyze(repoPath, reviewSinceHash);
-                        if (graphJson == null) {
-                            log.warn("code-review-graph returned no output, skipping graph analysis");
-                        }
+                        // 代码架构图分析（纯 Java 实现，基于 import 关系）
+                        String graphJson = codeReviewGraphEngine.analyze(diffs);
 
                         CodeReviewContext reviewContext = new CodeReviewContext();
                         reviewContext.setProjectName(request.getProjectName());

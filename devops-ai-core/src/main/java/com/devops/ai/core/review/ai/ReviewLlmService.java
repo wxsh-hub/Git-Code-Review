@@ -377,6 +377,12 @@ public class ReviewLlmService {
             }
         }
 
+        // 兜底：始终用最终分类同步严重级别
+        // （防止 review LLM 分类失败时，OCR 阶段基于关键词推断的严重级别残留）
+        if (f.getCategory() != null && f.getCategory() != FindingCategory.OTHER) {
+            f.setSeverity(FindingSeverity.fromCategory(f.getCategory()));
+        }
+
         f.setReviewConclusion(output.reason);
         f.setReviewer("review LLM");
 

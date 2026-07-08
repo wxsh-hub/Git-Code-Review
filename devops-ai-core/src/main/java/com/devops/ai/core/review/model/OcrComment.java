@@ -6,6 +6,7 @@ package com.devops.ai.core.review.model;
 public class OcrComment {
     private String path;           // 文件路径
     private String content;        // 评论内容
+    private String category;       // 问题分类（SECURITY/NPE/...）— review LLM 输出
     private String existingCode;   // 现有代码
     private String suggestionCode; // 建议代码
     private int startLine;         // 起始行号
@@ -16,6 +17,8 @@ public class OcrComment {
     public void setPath(String path) { this.path = path; }
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }
+    public String getCategory() { return category; }
+    public void setCategory(String category) { this.category = category; }
     public String getExistingCode() { return existingCode; }
     public void setExistingCode(String existingCode) { this.existingCode = existingCode; }
     public String getSuggestionCode() { return suggestionCode; }

@@ -103,13 +103,13 @@ public enum FindingSeverity {
             case CONCURRENCY:
             case RESOURCE_LEAK:
             case ERROR_HANDLING:
+            case ARCHITECTURE:    // 循环依赖/分层违规 — 结构性缺陷，影响面广
+            case LOGIC_ERROR:     // 业务逻辑缺陷 — 直接产生错误结果
                 return HIGH;
 
             // P2 中危
             case PERFORMANCE:
             case DEPENDENCY:
-            case ARCHITECTURE:
-            case LOGIC_ERROR:
                 return MEDIUM;
 
             // P3 低危
