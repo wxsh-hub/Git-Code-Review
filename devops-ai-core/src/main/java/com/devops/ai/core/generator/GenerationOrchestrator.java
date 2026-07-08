@@ -184,8 +184,8 @@ public class GenerationOrchestrator {
         List<Commit> commits;
 
         if (request.isIncremental()) {
-            String formSinceHash = request.getSinceHash();
-            String formUntilHash = request.getUntilHash();
+            String formSinceHash = emptyToNull(request.getSinceHash());
+            String formUntilHash = emptyToNull(request.getUntilHash());
             List<Commit> incrementalCommits = incrementalManager.getIncrementalCommits(
                     request.getProjectId(), request.getBranch(), formSinceHash, formUntilHash);
             if (incrementalCommits == null) {
@@ -335,20 +335,34 @@ public class GenerationOrchestrator {
                     String reviewUntilHash = emptyToNull(request.getUntilHash());
                     boolean isDeepScan = request.isUseOcrDeepScan();
 
-                    // If no hash range provided, scan the entire project from root commit
+                    // If no hash range provided, first try incremental tracker, then fall back to full scan
                     if (reviewSinceHash == null && reviewUntilHash == null) {
-                        File cloneDir = codeReviewDataCollector.resolveCloneDir(projectConfig);
-                        // Ensure clone exists by running collectDiffs first
-                        if (commits != null && !commits.isEmpty()) {
-                            String firstHash = commits.get(0).getId();
-                            codeReviewDataCollector.collectDiffs(projectConfig, firstHash, firstHash);
+                        if (request.isIncremental()) {
+                            String pid = request.getProjectId();
+                            String br = request.getBranch();
+                            String trackerHash = incrementalManager.getSinceHash(pid, br);
+                            log.info("Incremental diff lookup: projectId={}, branch={}, trackerHash={}",
+                                    pid, br, trackerHash);
+                            if (trackerHash != null) {
+                                reviewSinceHash = trackerHash;
+                                reviewUntilHash = "HEAD";
+                                log.info("Incremental diff: from tracker hash {} to HEAD", trackerHash);
+                            }
                         }
-                        String rootHash = codeReviewDataCollector.getRootCommitHash(cloneDir);
-                        if (rootHash != null) {
-                            reviewSinceHash = rootHash;
-                            reviewUntilHash = "HEAD";
-                            log.info("{}: diff from root commit {} to HEAD",
-                                    isDeepScan ? "Deep scan mode" : "Full project scan", rootHash);
+                        if (reviewSinceHash == null) {
+                            // No tracker available, true full scan
+                            File cloneDir = codeReviewDataCollector.resolveCloneDir(projectConfig);
+                            if (commits != null && !commits.isEmpty()) {
+                                String firstHash = commits.get(0).getId();
+                                codeReviewDataCollector.collectDiffs(projectConfig, firstHash, firstHash);
+                            }
+                            String rootHash = codeReviewDataCollector.getRootCommitHash(cloneDir);
+                            if (rootHash != null) {
+                                reviewSinceHash = rootHash;
+                                reviewUntilHash = "HEAD";
+                                log.info("{}: diff from root commit {} to HEAD",
+                                        isDeepScan ? "Deep scan mode" : "Full project scan", rootHash);
+                            }
                         }
                     } else if (reviewSinceHash == null || reviewUntilHash == null) {
                         // One of the hashes is missing — derive from commits

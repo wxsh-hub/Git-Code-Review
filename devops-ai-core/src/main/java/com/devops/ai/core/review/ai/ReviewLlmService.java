@@ -5,7 +5,8 @@ import com.devops.ai.core.review.model.*;
 import com.devops.ai.infrastructure.entity.AiConfig;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
-import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -13,6 +14,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 双 LLM 交叉验证服务 — Phase 6 核心。
@@ -39,7 +42,14 @@ import java.util.*;
 public class ReviewLlmService {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewLlmService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true)
+            .configure(JsonParser.Feature.ALLOW_SINGLE_QUOTES, true)
+            .configure(JsonParser.Feature.ALLOW_BACKSLASH_ESCAPING_ANY_CHARACTER, true);
+
+    /** 并发线程数 */
+    private static final int CONCURRENCY = 8;
 
     private static final String SYSTEM_PROMPT =
             "你是一个资深的代码审查专家。请独立判断以下代码是否存在真实缺陷，" +
@@ -101,30 +111,59 @@ public class ReviewLlmService {
             return findings;
         }
 
-        int reviewed = 0;
-        int failed = 0;
+        // 只取 P0/P1/P2
+        List<Finding> high = new ArrayList<>();
         for (Finding f : findings) {
-            if (!isHighSeverity(f.getSeverity())) continue;
+            if (isHighSeverity(f.getSeverity())) high.add(f);
+        }
+        if (high.isEmpty()) return findings;
 
-            try {
-                String response = callReviewLlm(provider, apiKey, apiUrl, model, f);
-                ReviewOutput output = parseReviewResponse(response);
-                if (output != null) {
-                    applyReview(f, output);
-                    reviewed++;
-                } else {
-                    failed++;
+        int total = high.size();
+        AtomicInteger reviewed = new AtomicInteger(0);
+        AtomicInteger failed = new AtomicInteger(0);
+        AtomicInteger completed = new AtomicInteger(0);
+
+        ExecutorService executor = Executors.newFixedThreadPool(CONCURRENCY);
+        List<Future<?>> futures = new ArrayList<>(total);
+        long startTime = System.currentTimeMillis();
+
+        for (Finding f : high) {
+            futures.add(executor.submit(() -> {
+                try {
+                    String response = callReviewLlm(provider, apiKey, apiUrl, model, f);
+                    ReviewOutput output = parseReviewResponse(response);
+                    if (output != null) {
+                        synchronized (f) {
+                            applyReview(f, output);
+                        }
+                        reviewed.incrementAndGet();
+                    } else {
+                        failed.incrementAndGet();
+                    }
+                } catch (Exception e) {
+                    log.warn("Review LLM failed for {} ({} lines {}-{}): {}",
+                            f.getId(), f.getFile(), f.getStartLine(), f.getEndLine(), e.getMessage());
+                    failed.incrementAndGet();
+                } finally {
+                    int done = completed.incrementAndGet();
+                    if (done % 20 == 0 || done == total) {
+                        long elapsed = System.currentTimeMillis() - startTime;
+                        log.info("Review LLM progress: {}/{} ({} OK, {} failed) in {}s",
+                                done, total, reviewed.get(), failed.get(), elapsed / 1000);
+                    }
                 }
-            } catch (Exception e) {
-                log.warn("Review LLM failed for {} ({} lines {}-{}): {}",
-                        f.getId(), f.getFile(), f.getStartLine(), f.getEndLine(), e.getMessage());
-                failed++;
-                // 不回退 Finding——保留原始值 + UNREVIEWED 状态
-            }
+            }));
         }
 
-        log.info("Review LLM complete: {} reviewed, {} failed, {} total P0/P1",
-                reviewed, failed, reviewed + failed);
+        // 等待全部完成
+        for (Future<?> fut : futures) {
+            try { fut.get(); } catch (Exception ignored) { }
+        }
+        executor.shutdown();
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        log.info("Review LLM complete: {} reviewed, {} failed, {} total ({}s, {} threads)",
+                reviewed.get(), failed.get(), total, elapsed / 1000, CONCURRENCY);
         return findings;
     }
 
@@ -138,7 +177,7 @@ public class ReviewLlmService {
         log.debug("Calling review LLM for finding {} ({} lines {}-{})",
                 f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
         return llmClient.call(provider, apiKey, apiUrl, model,
-                SYSTEM_PROMPT, userPrompt, 1024, 0.0); // temperature=0.0 确保一致性
+                SYSTEM_PROMPT, userPrompt, 1024, 0.0, "json_object");
     }
 
     /**
@@ -184,44 +223,137 @@ public class ReviewLlmService {
     // ================================================================
 
     /**
-     * 解析 review LLM 的 JSON 响应，容错处理 markdown 代码块。
+     * 解析 review LLM 的 JSON 响应。
+     * LLM 已开启 JSON 模式，输出应为合法 JSON。解析失败时修复字符串值中未转义字符后重试。
      */
     ReviewOutput parseReviewResponse(String response) {
         if (response == null || response.trim().isEmpty()) return null;
 
-        String json = response.trim();
+        String json = extractJson(response);
 
-        // 去掉 markdown 代码块标记
-        if (json.startsWith("```")) {
-            int start = json.indexOf('\n');
-            if (start > 0) {
-                int end = json.lastIndexOf("```");
-                json = end > start ? json.substring(start + 1, end).trim() : json.substring(start + 1).trim();
+        // 直接解析（JSON 模式下成功率极高）
+        ReviewOutput output = tryParse(json);
+        if (output != null) return output;
+
+        // 兜底：修复 JSON 字符串值中未转义字符后重试
+        String repaired = repairJsonStringValues(json);
+        if (!repaired.equals(json)) {
+            output = tryParse(repaired);
+            if (output != null) {
+                log.debug("Review LLM JSON repaired successfully");
+                return output;
             }
         }
 
+        log.warn("Failed to parse review LLM JSON even after repair, raw={}",
+                response.length() > 200 ? response.substring(0, 200) + "..." : response);
+        return null;
+    }
+
+    private ReviewOutput tryParse(String json) {
         try {
             JsonNode node = MAPPER.readTree(json);
-            ReviewOutput output = new ReviewOutput();
-
-            output.confidence = node.has("confidence") ? node.get("confidence").asDouble() : 0.5;
-            output.severity = node.has("severity") ? node.get("severity").asText() : null;
-            output.category = node.has("category") ? node.get("category").asText() : null;
-            output.reason = node.has("reason") ? node.get("reason").asText() : null;
-            output.trigger = node.has("trigger") ? node.get("trigger").asText() : null;
-            output.suggestedFix = node.has("suggestedFix") ? node.get("suggestedFix").asText() : null;
-
-            // 合法性校验
-            if (output.confidence < 0) output.confidence = 0;
-            if (output.confidence > 1.0) output.confidence = 1.0;
-
-            return output;
-        } catch (JsonProcessingException e) {
-            log.warn("Failed to parse review LLM JSON response: {}", e.getMessage());
-            log.debug("Raw response: {}", response.length() > 200
-                    ? response.substring(0, 200) + "..." : response);
+            return buildOutput(node);
+        } catch (Exception e) {
             return null;
         }
+    }
+
+    private ReviewOutput buildOutput(JsonNode node) {
+        ReviewOutput output = new ReviewOutput();
+        output.confidence = node.has("confidence") ? node.get("confidence").asDouble() : 0.5;
+        output.severity = node.has("severity") ? node.get("severity").asText() : null;
+        output.category = node.has("category") ? node.get("category").asText() : null;
+        output.reason = node.has("reason") ? node.get("reason").asText() : null;
+        output.trigger = node.has("trigger") ? node.get("trigger").asText() : null;
+        output.suggestedFix = node.has("suggestedFix") ? node.get("suggestedFix").asText() : null;
+
+        if (output.confidence < 0) output.confidence = 0;
+        if (output.confidence > 1.0) output.confidence = 1.0;
+        return output;
+    }
+
+    // ================================================================
+    // JSON 容错工具方法（与 CodeReviewAiService 保持一致）
+    // ================================================================
+
+    /**
+     * 从 LLM 响应中提取 JSON 部分。
+     */
+    static String extractJson(String response) {
+        if (response == null || response.trim().isEmpty()) return "";
+        String text = response.trim();
+
+        int fenceStart = text.indexOf("```");
+        if (fenceStart >= 0) {
+            int jsonStart = text.indexOf('\n', fenceStart);
+            if (jsonStart >= 0) {
+                int fenceEnd = text.indexOf("```", jsonStart + 1);
+                if (fenceEnd >= 0) {
+                    String inner = text.substring(jsonStart + 1, fenceEnd).trim();
+                    if (inner.startsWith("{")) return inner;
+                }
+            }
+        }
+
+        int braceStart = text.indexOf('{');
+        int braceEnd = text.lastIndexOf('}');
+        if (braceStart >= 0 && braceEnd > braceStart) {
+            return text.substring(braceStart, braceEnd + 1);
+        }
+        return "";
+    }
+
+    /**
+     * 修复 JSON 字符串值中常见的未转义字符。
+     */
+    static String repairJsonStringValues(String json) {
+        if (json == null || json.isEmpty()) return json;
+
+        StringBuilder sb = new StringBuilder(json.length() * 2);
+        boolean inString = false;
+        boolean escaped = false;
+
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+
+            if (escaped) {
+                sb.append(c);
+                escaped = false;
+                continue;
+            }
+
+            if (inString) {
+                if (c == '\\') {
+                    sb.append(c);
+                    escaped = true;
+                } else if (c == '"') {
+                    int next = nextNonWhitespace(json, i + 1);
+                    if (next == ':' || next == ',' || next == '}' || next == ']' || next < 0) {
+                        inString = false;
+                        sb.append(c);
+                    } else {
+                        sb.append('\\').append(c);
+                    }
+                } else if (c == '\n' || c == '\r' || c == '\t') {
+                    sb.append(c == '\n' ? "\\n" : c == '\r' ? "\\r" : "\\t");
+                } else {
+                    sb.append(c);
+                }
+            } else {
+                sb.append(c);
+                if (c == '"') inString = true;
+            }
+        }
+        return sb.toString();
+    }
+
+    private static int nextNonWhitespace(String s, int from) {
+        for (int i = from; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return c;
+        }
+        return -1;
     }
 
     /**
@@ -234,16 +366,14 @@ public class ReviewLlmService {
         f.setConfidence(finalConfidence);
         f.setStatus(FindingStatus.fromConfidence(finalConfidence));
 
-        // review LLM 的结构化 severity/category 覆盖关键词推断值
-        // 只有当 review LLM 输出了真正的分类码时才覆盖，避免 "P0""P1" 等
-        // severity 值被 fromCode 误当成 OTHER 覆盖掉正确的 SECRET_EXPOSURE 等
-        if (output.severity != null) {
-            f.setSeverity(FindingSeverity.fromLevel(output.severity));
-        }
+        // 先用 review LLM 的分类覆盖关键词推断值
+        // 再根据分类确定性映射严重级别 — 消除 LLM 偷懒给错 P 级的问题
         if (output.category != null) {
             FindingCategory cat = FindingCategory.fromCode(output.category);
             if (cat != FindingCategory.OTHER) {
                 f.setCategory(cat);
+                // 代码侧根据分类查表定级，不依赖 LLM 输出的 severity
+                f.setSeverity(FindingSeverity.fromCategory(cat));
             }
         }
 

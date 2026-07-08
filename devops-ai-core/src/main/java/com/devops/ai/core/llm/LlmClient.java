@@ -10,6 +10,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+
 import java.util.*;
 
 @Component
@@ -20,15 +22,26 @@ public class LlmClient {
     private final RestTemplate restTemplate;
 
     public LlmClient() {
-        this.restTemplate = new RestTemplate();
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);       // 连接超时 10 秒
+        factory.setReadTimeout(120_000);          // 读取超时 120 秒（LLM 响应可慢一些）
+        this.restTemplate = new RestTemplate(factory);
     }
 
     public String call(String provider, String apiKey, String apiUrl, String model, String prompt) {
-        return call(provider, apiKey, apiUrl, model, null, prompt, 4096, 0.1);
+        return call(provider, apiKey, apiUrl, model, null, prompt, 4096, 0.1, null);
     }
 
     public String call(String provider, String apiKey, String apiUrl, String model, String prompt, int maxTokens) {
-        return call(provider, apiKey, apiUrl, model, null, prompt, maxTokens, 0.1);
+        return call(provider, apiKey, apiUrl, model, null, prompt, maxTokens, 0.1, null);
+    }
+
+    /**
+     * 带 maxTokens 和 responseFormat 的重载（最常用的 JSON 输出场景）。
+     */
+    public String call(String provider, String apiKey, String apiUrl, String model,
+                       String prompt, int maxTokens, String responseFormat) {
+        return call(provider, apiKey, apiUrl, model, null, prompt, maxTokens, 0.1, responseFormat);
     }
 
     /**
@@ -41,6 +54,17 @@ public class LlmClient {
      */
     public String call(String provider, String apiKey, String apiUrl, String model,
                        String systemPrompt, String userPrompt, int maxTokens, double temperature) {
+        return call(provider, apiKey, apiUrl, model, systemPrompt, userPrompt, maxTokens, temperature, null);
+    }
+
+    /**
+     * 支持 response_format 的重载。
+     *
+     * @param responseFormat null 表示无约束，{@code "json_object"} 要求 LLM 输出合法 JSON
+     */
+    public String call(String provider, String apiKey, String apiUrl, String model,
+                       String systemPrompt, String userPrompt, int maxTokens, double temperature,
+                       String responseFormat) {
         if (apiKey == null || apiKey.isEmpty()) {
             throw new AiServiceException("API key not configured");
         }
@@ -48,12 +72,13 @@ public class LlmClient {
         if ("anthropic".equals(provider)) {
             return callAnthropicApi(apiUrl, apiKey, model, systemPrompt, userPrompt, maxTokens, temperature);
         }
-        return callOpenAiCompatibleApi(apiUrl, apiKey, model, systemPrompt, userPrompt, maxTokens, temperature);
+        return callOpenAiCompatibleApi(apiUrl, apiKey, model, systemPrompt, userPrompt, maxTokens, temperature, responseFormat);
     }
 
     private String callOpenAiCompatibleApi(String baseUrl, String apiKey, String model,
                                            String systemPrompt, String userPrompt,
-                                           int maxTokens, double temperature) {
+                                           int maxTokens, double temperature,
+                                           String responseFormat) {
         try {
             String url = baseUrl.replaceAll("/+$", "") + "/v1/chat/completions";
 
@@ -77,6 +102,13 @@ public class LlmClient {
             requestBody.put("messages", messages);
             requestBody.put("temperature", temperature);
             requestBody.put("max_tokens", maxTokens);
+
+            // JSON 模式：要求 LLM 输出合法 JSON（OpenAI-compatible API，DeepSeek 支持）
+            if (responseFormat != null && !responseFormat.isEmpty()) {
+                Map<String, Object> fmt = new LinkedHashMap<>();
+                fmt.put("type", responseFormat);
+                requestBody.put("response_format", fmt);
+            }
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);

@@ -7,6 +7,8 @@ import com.devops.ai.infrastructure.entity.AiConfig;
 import com.devops.ai.infrastructure.exception.AiServiceException;
 import com.devops.ai.infrastructure.repository.AiConfigRepository;
 import com.devops.ai.infrastructure.util.ConfigEncryptor;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +25,11 @@ import java.util.stream.Collectors;
 public class CodeReviewAiService {
 
     private static final Logger log = LoggerFactory.getLogger(CodeReviewAiService.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true)
+            .configure(JsonParser.Feature.ALLOW_SINGLE_QUOTES, true)
+            .configure(JsonParser.Feature.ALLOW_BACKSLASH_ESCAPING_ANY_CHARACTER, true);
 
     private static final Map<String, String> DEFAULT_API_URLS = new LinkedHashMap<>();
 
@@ -455,12 +461,8 @@ public class CodeReviewAiService {
             return Collections.emptyList();
         }
 
-        OcrReviewResponse ocrResult;
-        try {
-            ocrResult = MAPPER.readValue(json, OcrReviewResponse.class);
-        } catch (Exception e) {
-            log.error("Module '{}': failed to parse LLM JSON: {} — raw={}", group.name, e.getMessage(),
-                    json.length() > 300 ? json.substring(0, 300) + "..." : json);
+        OcrReviewResponse ocrResult = parseOcrResult(group.name, json);
+        if (ocrResult == null) {
             return Collections.emptyList();
         }
 
@@ -583,6 +585,98 @@ public class CodeReviewAiService {
         }
 
         return "";
+    }
+
+    /**
+     * 解析 LLM 返回的 OCR JSON 结果。
+     * LLM 已开启 JSON 模式，直接解析；失败时修复字符串值中未转义字符后重试。
+     * 返回 null 表示解析失败。
+     */
+    private OcrReviewResponse parseOcrResult(String moduleName, String json) {
+        // 直接解析
+        try {
+            return MAPPER.readValue(json, OcrReviewResponse.class);
+        } catch (Exception e) {
+            log.debug("Module '{}': direct parse failed, trying repair: {}", moduleName, e.getMessage());
+        }
+
+        // 修复字符串值中未转义字符后重试
+        String repaired = repairJsonStringValues(json);
+        if (!repaired.equals(json)) {
+            try {
+                OcrReviewResponse result = MAPPER.readValue(repaired, OcrReviewResponse.class);
+                log.info("Module '{}': JSON repaired successfully", moduleName);
+                return result;
+            } catch (Exception e) {
+                log.debug("Module '{}': repaired JSON still invalid: {}", moduleName, e.getMessage());
+            }
+        }
+
+        log.error("Module '{}': failed to parse LLM JSON even after repair — raw={}", moduleName,
+                json.length() > 300 ? json.substring(0, 300) + "..." : json);
+        return null;
+    }
+
+    /**
+     * 修复 JSON 字符串值中常见的未转义字符。
+     * 处理 LLM 在代码片段字段（existingCode、suggestionCode 等）中
+     * 输出未转义的双引号、换行符、反斜杠等问题。
+     */
+    static String repairJsonStringValues(String json) {
+        if (json == null || json.isEmpty()) return json;
+
+        StringBuilder sb = new StringBuilder(json.length() * 2);
+        boolean inString = false;
+        boolean escaped = false;
+
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+
+            if (escaped) {
+                sb.append(c);
+                escaped = false;
+                continue;
+            }
+
+            if (inString) {
+                if (c == '\\') {
+                    sb.append(c);
+                    escaped = true;
+                } else if (c == '"') {
+                    // 检查下一个非空白字符，判断这是字符串结束还是未转义的引号
+                    int next = nextNonWhitespace(json, i + 1);
+                    if (next == ':' || next == ',' || next == '}' || next == ']' || next < 0) {
+                        // 后面是 JSON 结构字符，这是字符串正常结束
+                        inString = false;
+                        sb.append(c);
+                    } else {
+                        // 字符串内部的未转义引号，转义它
+                        sb.append('\\').append(c);
+                    }
+                } else if (c == '\n' || c == '\r' || c == '\t') {
+                    // 字符串内部的换行/tab，转义
+                    sb.append(c == '\n' ? "\\n" : c == '\r' ? "\\r" : "\\t");
+                } else {
+                    sb.append(c);
+                }
+            } else {
+                sb.append(c);
+                if (c == '"') {
+                    inString = true;
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private static int nextNonWhitespace(String s, int from) {
+        for (int i = from; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c != ' ' && c != '\n' && c != '\r' && c != '\t') {
+                return c;
+            }
+        }
+        return -1;
     }
 
     /**
@@ -1006,7 +1100,7 @@ public class CodeReviewAiService {
         String apiUrl = getApiUrl();
         String model = getModel();
         log.info("Calling LLM for code review: provider={}, model={}", provider, model);
-        return llmClient.call(provider, apiKey, apiUrl, model, prompt, 16384);
+        return llmClient.call(provider, apiKey, apiUrl, model, prompt, 16384, "json_object");
     }
 
     private CodeReviewResult parseResponse(String response, CodeReviewResult result) {

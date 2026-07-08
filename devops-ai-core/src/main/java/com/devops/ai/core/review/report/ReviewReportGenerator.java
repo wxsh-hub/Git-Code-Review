@@ -58,29 +58,31 @@ public class ReviewReportGenerator {
     }
 
     private String generateFindingsMarkdown(CodeReviewResult result, CodeReviewContext context) {
-        List<Finding> findings = result.getFindings();
+        List<Finding> allFindings = result.getFindings();
+        List<Finding> confirmed = filterConfirmed(allFindings);
         StringBuilder sb = new StringBuilder();
 
         // ================================================================
-        // 第一页：管理摘要
+        // 第一页：管理摘要（数量 = allFindings，已确认 = confirmed）
         // ================================================================
-        generateManagementSummary(sb, findings, context);
+        generateManagementSummary(sb, allFindings, confirmed, context);
 
         sb.append("\n---\n\n");
 
         // ================================================================
-        // 第二页：问题处置页
+        // 第二页：问题处置页（只列确认的缺陷）
         // ================================================================
-        generateDispositionPage(sb, findings, context);
+        generateDispositionPage(sb, confirmed, context);
 
         sb.append("\n---\n\n");
 
         // ================================================================
-        // 第三页：模块与趋势页
+        // 第三页：模块与趋势页（只统计确认的缺陷）
         // ================================================================
-        sb.append(moduleReportGenerator.generate(findings));
+        sb.append(moduleReportGenerator.generate(confirmed));
 
-        log.info("Phase 8 four-page report generated (markdown, {} findings, {} chars)", findings.size(), sb.length());
+        log.info("Phase 8 four-page report generated (markdown, {} confirmed / {} total findings, {} chars)",
+                confirmed.size(), allFindings != null ? allFindings.size() : 0, sb.length());
         return sb.toString();
     }
 
@@ -88,12 +90,15 @@ public class ReviewReportGenerator {
     // 第一页：管理摘要
     // ================================================================
 
-    private void generateManagementSummary(StringBuilder sb, List<Finding> findings, CodeReviewContext context) {
-        long p0 = countBySeverity(findings, FindingSeverity.BLOCKER);
-        long p1 = countBySeverity(findings, FindingSeverity.HIGH);
-        long p2 = countBySeverity(findings, FindingSeverity.MEDIUM);
-        long p0Confirmed = countConfirmed(findings, FindingSeverity.BLOCKER);
-        long p1Confirmed = countConfirmed(findings, FindingSeverity.HIGH);
+    private void generateManagementSummary(StringBuilder sb, List<Finding> allFindings, List<Finding> confirmedFindings, CodeReviewContext context) {
+        // 数量 = 全部 finding（含误报/低置信度）
+        long p0 = countBySeverity(allFindings, FindingSeverity.BLOCKER);
+        long p1 = countBySeverity(allFindings, FindingSeverity.HIGH);
+        long p2 = countBySeverity(allFindings, FindingSeverity.MEDIUM);
+        // 已确认 = 仅 confidence ≥ 0.7 且非误报
+        long p0Confirmed = countBySeverity(confirmedFindings, FindingSeverity.BLOCKER);
+        long p1Confirmed = countBySeverity(confirmedFindings, FindingSeverity.HIGH);
+        long p2Confirmed = countBySeverity(confirmedFindings, FindingSeverity.MEDIUM);
 
         sb.append("# 管理摘要\n\n");
 
@@ -117,7 +122,6 @@ public class ReviewReportGenerator {
             sb.append("| 变更文件 | ").append(context.getFileDiffs().size()).append(" files |\n");
         }
         if (context.getCommits() != null) {
-            // 提取开发者名单
             Set<String> authors = new LinkedHashSet<>();
             for (com.devops.ai.core.model.Commit c : context.getCommits()) {
                 if (c.getAuthorName() != null) authors.add(c.getAuthorName());
@@ -126,19 +130,19 @@ public class ReviewReportGenerator {
         }
         sb.append("\n");
 
-        // 3) 风险等级
+        // 3) 风险等级（基于已确认的缺陷）
         String riskLevel;
         String riskIcon;
-        if (p0 >= 3) {
+        if (p0Confirmed >= 3) {
             riskLevel = "严重";
             riskIcon = "🔴";
-        } else if (p0 >= 1) {
+        } else if (p0Confirmed >= 1) {
             riskLevel = "高";
             riskIcon = "🟡";
-        } else if (p1 >= 5) {
+        } else if (p1Confirmed >= 5) {
             riskLevel = "高";
             riskIcon = "🟡";
-        } else if (p1 >= 1) {
+        } else if (p1Confirmed >= 1) {
             riskLevel = "中";
             riskIcon = "🔵";
         } else {
@@ -153,21 +157,21 @@ public class ReviewReportGenerator {
         sb.append("|------|------|--------|\n");
         sb.append("| P0 阻断 | ").append(p0).append(" | ").append(p0Confirmed).append(" |\n");
         sb.append("| P1 高危 | ").append(p1).append(" | ").append(p1Confirmed).append(" |\n");
-        sb.append("| P2 中危 | ").append(p2).append(" | - |\n");
+        sb.append("| P2 中危 | ").append(p2).append(" | ").append(p2Confirmed).append(" |\n");
         sb.append("\n");
 
-        if (findings.isEmpty()) {
+        if (confirmedFindings.isEmpty()) {
             sb.append("**审查结论**: 通过 — 未发现代码缺陷\n\n");
             return;
         }
 
         // 5) 是否建议发布
         sb.append("### 发布建议\n\n");
-        if (p0 > 0) {
+        if (p0Confirmed > 0) {
             sb.append("⛔ **不建议发布** — 存在 P0 阻断性问题，须全部修复后重新审查\n\n");
-        } else if (p1 >= 3) {
+        } else if (p1Confirmed >= 3) {
             sb.append("⚠ **建议修复后发布** — P1 高危问题较多，建议修复后再上线\n\n");
-        } else if (p1 >= 1) {
+        } else if (p1Confirmed >= 1) {
             sb.append("⚠ **有条件发布** — 少量 P1 问题，建议排入下个迭代修复\n\n");
         } else {
             sb.append("✅ **建议发布** — 无阻断/高危问题，可正常上线\n\n");
@@ -348,12 +352,6 @@ public class ReviewReportGenerator {
 
     private long countBySeverity(List<Finding> findings, FindingSeverity severity) {
         return findings.stream().filter(f -> f.getSeverity() == severity).count();
-    }
-
-    private long countConfirmed(List<Finding> findings, FindingSeverity severity) {
-        return findings.stream()
-                .filter(f -> f.getSeverity() == severity && f.getStatus() == FindingStatus.CONFIRMED)
-                .count();
     }
 
     private String truncateLine(String text, int maxLen) {
@@ -644,6 +642,26 @@ public class ReviewReportGenerator {
     // ================================================================
     // Helpers
     // ================================================================
+
+    /**
+     * 过滤低置信度/误报 finding，只保留 confidence ≥ 0.7 且状态为 CONFIRMED 的缺陷。
+     *
+     * <p>Phase 6 交叉验证后，置信度 < 0.7 的 finding 被标记为 FALSE_POSITIVE，
+     * 不应出现在最终报告中。P3/P4 finding 不经过交叉验证，保持原状。</p>
+     */
+    static List<Finding> filterConfirmed(List<Finding> findings) {
+        if (findings == null || findings.isEmpty()) return Collections.emptyList();
+        List<Finding> filtered = new ArrayList<>();
+        for (Finding f : findings) {
+            if (f.getStatus() == FindingStatus.FALSE_POSITIVE) continue;
+            if (f.getConfidence() < 0.7) continue;
+            filtered.add(f);
+        }
+        if (filtered.size() != findings.size()) {
+            log.info("Filtered findings: {} confirmed out of {} total", filtered.size(), findings.size());
+        }
+        return filtered;
+    }
 
     /**
      * 按文件路径对评论分组（保留原始顺序）。

@@ -73,4 +73,53 @@ public enum FindingSeverity {
             default: return INFO;
         }
     }
+
+    /**
+     * 根据问题分类确定性映射到严重级别。
+     *
+     * <p>review LLM 对"分类"（这是什么问题）的判断比直接给 P 级更可靠，
+     * 因此由代码侧根据分类查表定级，消除 LLM 偷懒给错级别的问题。</p>
+     *
+     * <h3>映射规则</h3>
+     * <ul>
+     *   <li>P0 阻断：安全漏洞、敏感信息暴露</li>
+     *   <li>P1 高危：空指针、事务边界、并发安全、资源泄漏、异常处理不当</li>
+     *   <li>P2 中危：性能问题、依赖风险、架构问题、逻辑错误</li>
+     *   <li>P3 低危：硬编码、代码风格</li>
+     *   <li>P4 信息：其他未归类问题</li>
+     * </ul>
+     */
+    public static FindingSeverity fromCategory(FindingCategory category) {
+        if (category == null) return INFO;
+        switch (category) {
+            // P0 阻断
+            case SECURITY:
+            case SECRET_EXPOSURE:
+                return BLOCKER;
+
+            // P1 高危
+            case NPE:
+            case TRANSACTION:
+            case CONCURRENCY:
+            case RESOURCE_LEAK:
+            case ERROR_HANDLING:
+                return HIGH;
+
+            // P2 中危
+            case PERFORMANCE:
+            case DEPENDENCY:
+            case ARCHITECTURE:
+            case LOGIC_ERROR:
+                return MEDIUM;
+
+            // P3 低危
+            case HARDCODED:
+            case CODE_STYLE:
+                return LOW;
+
+            // P4 信息
+            default:
+                return INFO;
+        }
+    }
 }
