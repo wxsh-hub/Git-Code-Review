@@ -57,6 +57,15 @@ public class CodeReviewAiService {
     @Value("${ocr.scan-batch-size:20}")
     private int scanBatchSize;
 
+    @Value("${ocr.deep-scan.max-source-chars:12000}")
+    private int maxSourceChars;
+
+    @Value("${ocr.deep-scan.retry-count:1}")
+    private int retryCount;
+
+    @Value("${ocr.deep-scan.max-chunk-chars:30000}")
+    private int maxChunkChars;
+
     public CodeReviewAiService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
                                ConfigEncryptor configEncryptor, OcrmcpClient ocrmcpClient,
                                FindingBlameTracer findingBlameTracer,
@@ -144,46 +153,14 @@ public class CodeReviewAiService {
             allFindings.addAll(findings);
             log.info("Diff review complete: {} findings from {} files", findings.size(), filtered.size());
         } else {
-            // scan 模式（无 hash 范围）：仅深度扫描时走 OCR code_scan，分批 + 线程池并发
+            // scan 模式（无 hash 范围）：深度扫描按模块分组，每模块一次 LLM 调用
             if (context.isUseOcrDeepScan()) {
-                List<List<FileDiff>> batches = splitIntoBatches(filtered, context, scanBatchSize);
-                // 预先计算 graph background，避免每个 batch 内重复解析 JSON
-                String graphBg = buildGraphBackground(context);
-                ExecutorService executor = Executors.newFixedThreadPool(scanConcurrency);
-                List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
-
-                try {
-                    for (int i = 0; i < batches.size(); i++) {
-                        final int batchIdx = i;
-                        final List<FileDiff> batch = batches.get(i);
-                        futures.add(CompletableFuture.supplyAsync(() -> {
-                            try {
-                                log.info("Batch {}/{}: {} files starting via code_scan",
-                                        batchIdx + 1, batches.size(), batch.size());
-                                List<Finding> batchFindings = reviewBatch(batch, context, graphBg, batchIdx);
-                                log.info("Batch {}/{}: {} findings", batchIdx + 1, batches.size(), batchFindings.size());
-                                return batchFindings;
-                            } catch (Exception e) {
-                                log.error("Batch {}/{} failed: {}", batchIdx + 1, batches.size(), e.getMessage());
-                                return Collections.<Finding>emptyList();
-                            }
-                        }, executor));
-                    }
-
-                    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-                    for (CompletableFuture<List<Finding>> f : futures) {
-                        List<Finding> batchFindings = f.get();
-                        allFindings.addAll(batchFindings);
-                        for (Finding finding : batchFindings) {
-                            if (finding.getModuleName() != null) moduleSet.add(finding.getModuleName());
-                        }
-                    }
-                } finally {
-                    executor.shutdown();
+                List<Finding> findings = reviewDeepScanByModule(filtered, context);
+                for (Finding f : findings) {
+                    if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
                 }
-                log.info("Deep scan complete: {} findings from {} files in {} batches",
-                        allFindings.size(), filtered.size(), batches.size());
+                allFindings.addAll(findings);
+                log.info("Deep scan complete: {} findings from {} files", findings.size(), filtered.size());
             } else {
                 // 无 hash 范围且未开深度扫描：不应该到达这里（Orchestrator 会设置 root..HEAD hash）
                 // 但保留 legacy 作为兜底
@@ -859,6 +836,424 @@ public class CodeReviewAiService {
         log.info("Batch {}: {} ocr comments → {} findings", batchIdx + 1,
                 comments != null ? comments.size() : 0, findings.size());
         return findings;
+    }
+
+    // ================================================================
+    // 深度扫描：按模块分组，每模块一次 LLM 调用（打包该模块所有文件源码）
+    // ================================================================
+
+    /**
+     * 深度扫描：按模块分组，每模块打包所有文件源码到一个 prompt，调一次 LLM。
+     *
+     * <p>与 diff 模式的 reviewDiffByModule 结构一致，区别在于：
+     * <ul>
+     *   <li>diff 模式打包 unified diff（仅变更行），深度扫描打包完整源码</li>
+     *   <li>深度扫描对单个大文件做截断（maxSourceChars），避免超出 LLM 上下文</li>
+     *   <li>prompt 中的审查指令针对全量代码（非 diff），不包含 diff 模式禁区</li>
+     * </ul>
+     *
+     * <p>预期效果：900 文件 / 10 模块 = 10 次 LLM 调用 ≈ 2-5 分钟。</p>
+     */
+    List<Finding> reviewDeepScanByModule(List<FileDiff> diffs, CodeReviewContext context) throws Exception {
+        // 确保每个 FileDiff 都有 newContent（从仓库读取缺失的文件）
+        ensureFileContent(diffs, context.getRepoPath());
+
+        Map<String, ReviewGroup> groups = groupByBusinessLink(diffs, context);
+        int concurrency = Math.min(scanConcurrency, groups.size());
+        log.info("Deep scan: {} files → {} module groups, {} concurrency",
+                diffs.size(), groups.size(), concurrency);
+
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
+
+        try {
+            for (ReviewGroup group : groups.values()) {
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        log.info("Deep scan module '{}': {} files → calling LLM...",
+                                group.name, group.files.size());
+                        List<Finding> findings = reviewDeepScanModuleGroup(group, context);
+                        log.info("Deep scan module '{}': {} findings", group.name, findings.size());
+                        return findings;
+                    } catch (Exception e) {
+                        log.error("Deep scan module '{}' failed: {}", group.name, e.getMessage());
+                        return Collections.<Finding>emptyList();
+                    }
+                }, executor));
+            }
+
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            List<Finding> allFindings = new ArrayList<>();
+            for (CompletableFuture<List<Finding>> f : futures) {
+                allFindings.addAll(f.get());
+            }
+            log.info("Deep scan complete: {} findings from {} files in {} groups",
+                    allFindings.size(), diffs.size(), groups.size());
+            return allFindings;
+        } finally {
+            executor.shutdown();
+        }
+    }
+
+    /**
+     * 确保所有 FileDiff 都有 newContent。缺失的从仓库路径读取。
+     */
+    private void ensureFileContent(List<FileDiff> diffs, String repoPath) {
+        for (FileDiff diff : diffs) {
+            if (diff.getNewContent() == null || diff.getNewContent().isEmpty()) {
+                try {
+                    java.nio.file.Path fullPath = java.nio.file.Paths.get(repoPath, diff.getFilePath());
+                    String content = new String(java.nio.file.Files.readAllBytes(fullPath),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    diff.setNewContent(content);
+                } catch (Exception e) {
+                    log.warn("Cannot read file {} from repo: {}", diff.getFilePath(), e.getMessage());
+                    diff.setNewContent(""); // 标记为空，后续跳过
+                }
+            }
+        }
+    }
+
+    /**
+     * 对一个模块组的所有文件调 LLM 审查（深度扫描模式）。
+     * 文件总量 <= maxChunkChars → 单次调用（方案A，质量最好）。
+     * 文件总量 > maxChunkChars → 拆块 + 共享摘要 + 并行调用（方案D）。
+     */
+    List<Finding> reviewDeepScanModuleGroup(ReviewGroup group, CodeReviewContext context) throws Exception {
+        int totalChars = 0;
+        for (FileDiff f : group.files) {
+            String content = f.getNewContent();
+            if (content != null) totalChars += Math.min(content.length(), maxSourceChars);
+        }
+
+        List<Finding> findings;
+        if (totalChars <= maxChunkChars) {
+            // 方案A：单次调用，质量最好
+            findings = parseFindings(group.name, callLlm(buildDeepScanPrompt(group, context)));
+            for (Finding f : findings) {
+                f.setModuleName(group.name);
+            }
+        } else {
+            // 方案D：拆块 + 共享摘要 + 并行
+            log.info("Deep scan module '{}': {} chars > {} limit, using parallel chunks with shared summary",
+                    group.name, totalChars, maxChunkChars);
+            findings = reviewDeepScanWithSummary(group, context);
+        }
+
+        log.info("Deep scan module '{}': {} findings from {} files",
+                group.name, findings.size(), group.files.size());
+        return findings;
+    }
+
+    /**
+     * 方案D：拆块 + 共享摘要 + 并行独立调用。
+     * 每个块的 prompt 包含：本块文件完整源码 + 其他块文件的类/方法签名摘要。
+     * 各块独立并行调用，最后合并 findings。
+     */
+    private List<Finding> reviewDeepScanWithSummary(ReviewGroup group, CodeReviewContext context) throws Exception {
+        List<List<FileDiff>> chunks = splitFilesIntoChunks(group.files, maxChunkChars);
+        // 构建所有文件的签名摘要（类名 + 方法名），排除当前块的文件
+        Map<List<FileDiff>, String> signatureCache = new LinkedHashMap<>();
+        for (List<FileDiff> chunk : chunks) {
+            signatureCache.put(chunk, buildSignatureSummaryExcluding(group.files, chunk));
+        }
+        // 架构上下文（与方案A 共享）
+        String graphBg = buildGraphBackground(context);
+
+        int concurrency = Math.min(scanConcurrency, chunks.size());
+        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
+
+        for (int i = 0; i < chunks.size(); i++) {
+            final int chunkIdx = i;
+            final List<FileDiff> chunk = chunks.get(i);
+            final String otherSignatures = signatureCache.get(chunk);
+            futures.add(CompletableFuture.supplyAsync(() -> {
+                try {
+                    String prompt = buildDeepScanChunkWithSummary(
+                            group.name, chunk, chunkIdx, chunks.size(), otherSignatures, graphBg, context);
+                    List<Finding> findings = parseFindings(group.name + "#" + chunkIdx, callLlm(prompt));
+                    // 设置模块名（parseFindings 不设置）
+                    for (Finding f : findings) {
+                        f.setModuleName(group.name);
+                    }
+                    return findings;
+                } catch (Exception e) {
+                    log.error("Deep scan module '{}' chunk {}/{} failed: {}",
+                            group.name, chunkIdx + 1, chunks.size(), e.getMessage());
+                    return Collections.<Finding>emptyList();
+                }
+            }, executor));
+        }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        executor.shutdown();
+
+        List<Finding> allFindings = new ArrayList<>();
+        for (CompletableFuture<List<Finding>> f : futures) {
+            allFindings.addAll(f.get());
+        }
+        return allFindings;
+    }
+
+    /** 从 LLM JSON 响应解析 Finding 列表 */
+    private List<Finding> parseFindings(String label, String response) {
+        String json = extractJson(response);
+        if (json.isEmpty()) {
+            log.warn("Deep scan '{}': LLM returned no valid JSON, raw={}", label,
+                    response.length() > 200 ? response.substring(0, 200) + "..." : response);
+            return Collections.emptyList();
+        }
+        OcrReviewResponse ocrResult = parseOcrResult(label, json);
+        if (ocrResult == null) return Collections.emptyList();
+
+        List<Finding> findings = new ArrayList<>();
+        List<OcrComment> comments = ocrResult.getComments();
+        if (comments != null) {
+            for (OcrComment cm : comments) {
+                findings.add(Finding.fromOcrComment(cm));
+            }
+        }
+        return findings;
+    }
+
+    /**
+     * 将模块文件按字符数分块。每个块的源码总字符数不超过 maxChunkChars。
+     */
+    private List<List<FileDiff>> splitFilesIntoChunks(List<FileDiff> files, int maxChars) {
+        List<List<FileDiff>> chunks = new ArrayList<>();
+        List<FileDiff> currentChunk = new ArrayList<>();
+        int currentSize = 0;
+
+        for (FileDiff f : files) {
+            int fileSize = f.getNewContent() != null ? Math.min(f.getNewContent().length(), maxSourceChars) : 0;
+            if (currentSize + fileSize > maxChars && !currentChunk.isEmpty()) {
+                chunks.add(currentChunk);
+                currentChunk = new ArrayList<>();
+                currentSize = 0;
+            }
+            currentChunk.add(f);
+            currentSize += fileSize;
+        }
+        if (!currentChunk.isEmpty()) {
+            chunks.add(currentChunk);
+        }
+        return chunks;
+    }
+
+    /**
+     * 构建签名摘要，排除指定块中的文件（避免本块文件重复出现在摘要中）。
+     */
+    private String buildSignatureSummaryExcluding(List<FileDiff> allFiles, List<FileDiff> excludeChunk) {
+        Set<String> excludePaths = new LinkedHashSet<>();
+        for (FileDiff f : excludeChunk) {
+            excludePaths.add(f.getFilePath());
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (FileDiff diff : allFiles) {
+            if (excludePaths.contains(diff.getFilePath())) continue;
+            String content = diff.getNewContent();
+            if (content == null || content.isEmpty()) continue;
+            JavaFileParser parser = new JavaFileParser(content);
+            if (parser.getClassNames().isEmpty()) continue;
+
+            sb.append("- ").append(diff.getFilePath()).append(": ");
+            sb.append(String.join(", ", parser.getClassNames()));
+            if (!parser.getMethodNames().isEmpty()) {
+                sb.append(" → ").append(String.join(", ", parser.getMethodNames()));
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 构建带共享摘要的分块 prompt。
+     * 包含：项目信息 + 本块文件完整源码 + 其他块文件的签名摘要 + 审查清单。
+     */
+    private String buildDeepScanChunkWithSummary(String moduleName, List<FileDiff> chunk,
+                                                   int chunkIdx, int totalChunks,
+                                                   String otherSignatures, String graphBg,
+                                                   CodeReviewContext context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("你是一个资深的 Java 代码审查专家。请审查以下代码。\n\n");
+
+        sb.append("## 项目信息\n");
+        sb.append("- 项目：").append(context.getProjectName() != null ? context.getProjectName() : "unknown").append("\n");
+        sb.append("- 分支：").append(context.getBranch() != null ? context.getBranch() : "unknown").append("\n\n");
+
+        sb.append("## 模块: ").append(moduleName).append("（审查第 ").append(chunkIdx + 1)
+                .append("/").append(totalChunks).append(" 批，共 ").append(chunk.size()).append(" 个文件）\n\n");
+
+        // 本批文件完整源码
+        for (FileDiff diff : chunk) {
+            sb.append("### ").append(diff.getFilePath()).append("\n");
+            String content = diff.getNewContent();
+            if (content != null && !content.isEmpty()) {
+                if (content.length() > maxSourceChars) {
+                    content = content.substring(0, maxSourceChars)
+                            + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
+                }
+                sb.append("```java\n").append(content).append("\n```\n\n");
+            }
+        }
+
+        // 架构上下文（与方案A 一致）
+        if (graphBg != null && !graphBg.isEmpty()) {
+            sb.append("## 架构上下文\n").append(graphBg).append("\n\n");
+        }
+
+        // 共享摘要：本模块其他文件的类/方法签名
+        if (otherSignatures != null && !otherSignatures.isEmpty()) {
+            sb.append("## 本模块其他文件的类与方法概览（供跨文件引用检查）\n\n");
+            sb.append(otherSignatures).append("\n");
+            sb.append("请关注本批代码是否与上述其他文件存在调用关系、接口不匹配、字段名不一致等问题。\n\n");
+        }
+
+        // 审查清单
+        appendReviewChecklist(sb);
+
+        return sb.toString();
+    }
+
+    // ================================================================
+    // 深度扫描 prompt 构建（单次调用 + 分块通用）
+    // ================================================================
+
+    /**
+     * 构建深度扫描的模块级 prompt（单次调用，方案A）。
+     */
+    private String buildDeepScanPrompt(ReviewGroup group, CodeReviewContext context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("你是一个资深的 Java 代码审查专家。请审查以下模块的所有文件代码。\n\n");
+
+        sb.append("## 项目信息\n");
+        sb.append("- 项目：").append(context.getProjectName() != null ? context.getProjectName() : "unknown").append("\n");
+        sb.append("- 分支：").append(context.getBranch() != null ? context.getBranch() : "unknown").append("\n\n");
+
+        sb.append("## 模块: ").append(group.name).append("（共 ").append(group.files.size()).append(" 个文件）\n\n");
+
+        for (FileDiff diff : group.files) {
+            sb.append("### ").append(diff.getFilePath()).append("\n");
+            String content = diff.getNewContent();
+            if (content != null && !content.isEmpty()) {
+                if (content.length() > maxSourceChars) {
+                    content = content.substring(0, maxSourceChars)
+                            + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
+                }
+                sb.append("```java\n").append(content).append("\n```\n\n");
+            } else {
+                sb.append("（文件内容为空或无法读取）\n\n");
+            }
+        }
+
+        if (group.background != null && !group.background.isEmpty()) {
+            sb.append("## 架构上下文\n").append(group.background).append("\n\n");
+        }
+
+        appendReviewChecklist(sb);
+        return sb.toString();
+    }
+
+    /** 追加审查清单（方案A 和方案D 共用，与 diff 模式对齐） */
+    private void appendReviewChecklist(StringBuilder sb) {
+        sb.append("## 审查要求\n\n");
+
+        // 全量模式注意事项
+        sb.append("⚠️ **全量扫描模式说明**：\n");
+        sb.append("- 你看到的是模块内文件的完整源码（非 diff），请基于完整代码上下文审查\n");
+        sb.append("- 你可以看到本模块内所有文件，跨文件调用关系可以完整分析\n");
+        sb.append("- 你**看不到其他模块的代码** — 如果 @Autowired 的 bean 定义在其他模块，不要报「bean 不存在」\n");
+        sb.append("- 如果 import 了其他模块的类但看不到其源码，这是正常的，不要报「类不存在」\n");
+        sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n\n");
+
+        // 置信度校准规则（与 diff 模式一致）
+        sb.append("**置信度校准规则**：\n");
+        sb.append("- 确定是缺陷（有明确证据、代码中就能证实的）→ confidence 0.85-0.99\n");
+        sb.append("- 有趋势/特征但不完全确定（如代码模式像 bug，但缺少上下文证实）→ confidence ≤ 0.70\n");
+        sb.append("- 纯猜测/不确定/「可能有风险」/「建议检查是否有」→ **不要报**，这不是代码审查要做的事\n");
+        sb.append("- 如果你在 content 中写了「可能」「也许」「不确定」「需要验证」「建议检查是否有」，\n");
+        sb.append("  说明你自己都不确定，此时 confidence 必须 ≤ 0.70\n\n");
+
+        sb.append("请逐文件逐行审查以上代码，输出严格的结构化 JSON。\n\n");
+
+        // 输出格式
+        sb.append("**输出格式**（一个 JSON 对象，不要 markdown 代码块标记）：\n");
+        sb.append("```\n");
+        sb.append("{\n");
+        sb.append("  \"comments\": [\n");
+        sb.append("    {\n");
+        sb.append("      \"path\": \"文件路径（相对于项目根目录）\",\n");
+        sb.append("      \"category\": \"问题分类代码（见下方清单）\",\n");
+        sb.append("      \"content\": \"问题描述（简洁明确，说明什么问题、为什么是问题）\",\n");
+        sb.append("      \"existingCode\": \"现有问题代码\",\n");
+        sb.append("      \"suggestionCode\": \"建议修改后的代码（如适用）\",\n");
+        sb.append("      \"startLine\": 行号（整数，对应源文件中的行号）,\n");
+        sb.append("      \"endLine\": 行号（整数）,\n");
+        sb.append("      \"thinking\": \"分析推理过程\"\n");
+        sb.append("    }\n");
+        sb.append("  ]\n");
+        sb.append("}\n");
+        sb.append("```\n\n");
+
+        // 分类优先级（带具体例子）
+        sb.append("**审查清单 — 请逐项检查每处代码，发现问题时在 category 字段标注对应代码**：\n\n");
+        sb.append("⚠️ **分类优先级（当一个问题命中多个分类时，选优先级最高的）**：\n");
+        sb.append("  SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK >\n");
+        sb.append("  ERROR_HANDLING > ARCHITECTURE > COMPILE_ERROR > LOGIC_ERROR > PERFORMANCE >\n");
+        sb.append("  DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n");
+        sb.append("  例：`@GetMapping` 做写操作且缺少权限校验 → SECURITY（不是 CODE_STYLE）\n");
+        sb.append("  例：硬编码了密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
+
+        // P0 阻断
+        sb.append("P0 阻断（必须检查，发现即阻断）：\n");
+        sb.append("□ SECURITY - SQL注入：用户输入拼接到SQL/HQL/JPA原生查询中？MyBatis ${} 而非 #{}？\n");
+        sb.append("□ SECURITY - XSS/权限绕过：用户输入未转义输出？敏感操作缺少 @PreAuthorize 或角色校验？\n");
+        sb.append("□ SECURITY - 反序列化漏洞：ObjectInputStream.readObject() 从不可信来源读取？是否有白名单校验？\n");
+        sb.append("□ SECURITY - SSRF：URL/URI 参数来自用户输入且未校验？RestTemplate/HttpClient 访问用户指定的 URL？\n");
+        sb.append("□ SECURITY - 路径穿越：文件路径拼接了用户输入？是否包含 ../ 或绝对路径绕过？\n");
+        sb.append("□ SECURITY - XXE：XML 解析是否禁用了外部实体（DocumentBuilderFactory.setExpandEntityReferences(false)）？\n");
+        sb.append("□ SECRET_EXPOSURE - 敏感信息：**仅限 Java 代码中**硬编码密码/Token/API密钥/AccessKey/Secret？注意：yml/xml/properties 配置文件中的密码是正常部署配置，不要报。\n");
+        sb.append("□ TRANSACTION - 事务：写操作（INSERT/UPDATE/DELETE）是否有 @Transactional？事务传播/回滚策略是否正确？\n\n");
+
+        // P1 高危
+        sb.append("P1 高危（重点检查）：\n");
+        sb.append("□ NPE - 空指针：方法返回值/参数/集合元素使用前是否判空？Optional.get()/Stream.findFirst().get() 有无保护？\n");
+        sb.append("□ CONCURRENCY - 并发/死锁：共享可变变量是否线程安全（synchronized/volatile/AtomicXxx）？synchronized 块是否嵌套（死锁风险）？HashMap 是否误用于多线程（应改用 ConcurrentHashMap）？\n");
+        sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
+        sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
+        sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
+        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？\n");
+        sb.append("□ COMPILE_ERROR - 编译错误：字符串字面量缺少闭合引号？缺少分号？引用了不存在的类/方法/字段？注解参数类型不对？方法签名改了但调用方未更新？Entity/DTO 缺少 Mapper XML 引用的属性？\n\n");
+
+        // P2 中危
+        sb.append("P2 中危（注意检查）：\n");
+        sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？是否有不必要的对象创建？字符串拼接是否用 StringBuilder？\n");
+        sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？是否有未使用的 import？\n\n");
+
+        // P3 低危
+        sb.append("P3 低危（顺带指出）：\n");
+        sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径、未提取常量？\n");
+        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？\n");
+        sb.append("□ DEAD_CODE - 冗余/死代码：定义了但从未调用的方法/变量？永远不执行的分支（if(false)/return后的代码）？重复代码块？不必要的 import？\n\n");
+
+        // evidence 要求
+        sb.append("**evidence 字段要求（必须遵守）**：\n");
+        sb.append("- existingCode 必须是源文件中的**实际源码**，从 ```java 代码块中复制，不要自己编造或概括\n");
+        sb.append("- 如果涉及多行代码，完整复制，太长时可以在非关键部分用 \"... [省略中间N行] ...\" 代替\n");
+        sb.append("- **严禁**在 existingCode 中用文字描述代替源码（如「定义了三个相同 id 的 select」这种）\n\n");
+
+        // 输出要求
+        sb.append("**要求**：\n");
+        sb.append("1. 每个 comment 必须包含 path、category、content、startLine、endLine 字段\n");
+        sb.append("2. category 必须填写清单中对应的分类代码（如 NPE、SECURITY、PERFORMANCE 等）\n");
+        sb.append("3. startLine 对应源文件中的实际行号\n");
+        sb.append("4. 如果没有发现问题，返回 {\"comments\": []}\n");
+        sb.append("5. 只输出 JSON，不要有任何其他文字或解释\n");
+        sb.append("6. 不要用 ```json ``` 包裹，直接输出 { 开头\n");
+        sb.append("7. **禁止使用省略号（...）** — content/thinking/existingCode/suggestionCode 都输出完整内容，不截断不缩写");
     }
 
     // ================================================================

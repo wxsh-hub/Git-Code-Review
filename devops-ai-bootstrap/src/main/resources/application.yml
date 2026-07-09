@@ -72,8 +72,12 @@ devops:
 ocr:
   bin:
     path: "../bin/ocr.exe"  # 相对于 devops-ai 根目录的 ocr 二进制
-  timeout-minutes: 30                        # 审查超时时间
-  scan-concurrency: 4                        # 深度扫描批次并发数
-  scan-batch-size: 20                        # 深度扫描每批文件数
+  timeout-minutes: 30                        # OCR 子进程审查超时时间
+  scan-concurrency: 4                        # 深度扫描文件并发数
+  scan-batch-size: 20                        # OCR 子进程模式每批文件数（旧模式）
   model: ""                                  # OCR 使用模型，空则用 llm.modelName
   fallback-on-error: true                    # OCR 出错时是否回退到旧的 CodeReviewAiService
+  deep-scan:
+    max-source-chars: 12000                  # 单文件源码截断阈值（字符数）
+    max-chunk-chars: 30000                   # 多轮对话每块最大字符数（约 10000 tokens）
+    retry-count: 1                           # 单文件 LLM 调用失败重试次数

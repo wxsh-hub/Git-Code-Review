@@ -54,17 +54,42 @@ bash start.sh start      # 后台启动
 | 构建 | `mvn clean package -DskipTests`，产物在 `devops-ai-bootstrap/target/` |
 | 停止服务 | `taskkill /f /im java.exe`（Windows，会终止所有 Java 进程） |
 
-## Git 仓库
+## Git 仓库（多仓库架构）
 
-| Remote | 地址 | 说明 |
-|--------|------|------|
-| **github** | `github.com:wxsh-hub/Git-Code-Review.git` | **默认推送目标**，提交代码用这个 |
-| origin | `jihulab.com/wxsh/ai-git-review.git` | 极狐 GitLab，不要推到这里 |
+代码已拆分为前后端独立仓库，提交时需要分开推送。
+
+| Remote | 地址 | 推送内容 |
+|--------|------|---------|
+| **origin** | `git@192.168.160.225:pd-devops-ai/code/java/ai-git-review.git` | **后端代码**（Java 模块） |
+| **web** | `git@192.168.160.225:pd-devops-ai/code/web/ai-git-review.git` | **前端代码**（HTML 模板） |
+| **github** | `github.com:wxsh-hub/Git-Code-Review.git` | **完整代码**（前后端合并，用于备份） |
+
+### 推送规则
 
 ```bash
-git push github master    # 正确
-git push origin master    # 错误，会推送到极狐 GitLab
+# 后端改动 → 推到内部 GitLab 后端仓库
+git push origin master
+
+# 前端改动 → 推到内部 GitLab 前端仓库
+git push web master
+
+# 前后端都改了 → 两个都推
+git push origin master && git push web master
+
+# 最终同步到 GitHub（完整代码备份）
+git push github master
 ```
+
+### 目录归属
+
+| 目录 | 归属 | 推送到 |
+|------|------|--------|
+| `devops-ai-api/` | 后端 | origin |
+| `devops-ai-core/` | 后端 | origin |
+| `devops-ai-bootstrap/` | 后端 | origin |
+| `devops-ai-infrastructure/` | 后端 | origin |
+| `devops-ai-web/` | 前端 | web |
+| `pom.xml`、`sql/`、`docs/` | 后端 | origin |
 
 ## 重新构建并重启
 

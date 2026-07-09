@@ -75,6 +75,139 @@ public class LlmClient {
         return callOpenAiCompatibleApi(apiUrl, apiKey, model, systemPrompt, userPrompt, maxTokens, temperature, responseFormat);
     }
 
+    /**
+     * 多轮对话调用（支持分块上传大模块）。
+     *
+     * @param messages       完整的消息列表（system + user/assistant 交替），格式：
+     *                       [{"role":"system","content":"..."}, {"role":"user","content":"..."}, ...]
+     * @param maxTokens      最大输出 token 数
+     * @param temperature    温度
+     * @param responseFormat null 表示无约束，{@code "json_object"} 要求 LLM 输出合法 JSON
+     */
+    public String callMultiTurn(String provider, String apiKey, String apiUrl, String model,
+                                 List<Map<String, Object>> messages, int maxTokens,
+                                 double temperature, String responseFormat) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            throw new AiServiceException("API key not configured");
+        }
+
+        if ("anthropic".equals(provider)) {
+            return callAnthropicApiMultiTurn(apiUrl, apiKey, model, messages, maxTokens, temperature);
+        }
+        return callOpenAiCompatibleApiMultiTurn(apiUrl, apiKey, model, messages, maxTokens, temperature, responseFormat);
+    }
+
+    private String callOpenAiCompatibleApiMultiTurn(String baseUrl, String apiKey, String model,
+                                                     List<Map<String, Object>> messages,
+                                                     int maxTokens, double temperature,
+                                                     String responseFormat) {
+        try {
+            String url = baseUrl.replaceAll("/+$", "") + "/v1/chat/completions";
+
+            Map<String, Object> requestBody = new LinkedHashMap<>();
+            requestBody.put("model", model);
+            requestBody.put("messages", messages);
+            requestBody.put("temperature", temperature);
+            requestBody.put("max_tokens", maxTokens);
+
+            if (responseFormat != null && !responseFormat.isEmpty()) {
+                Map<String, Object> fmt = new LinkedHashMap<>();
+                fmt.put("type", responseFormat);
+                requestBody.put("response_format", fmt);
+            }
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setBearerAuth(apiKey);
+
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+            ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+
+            if (response.getBody() != null) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> choices = (List<Map<String, Object>>) response.getBody().get("choices");
+                if (choices != null && !choices.isEmpty()) {
+                    Map<String, Object> choice = choices.get(0);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> respMessage = (Map<String, Object>) choice.get("message");
+                    if (respMessage != null && respMessage.get("content") != null) {
+                        return respMessage.get("content").toString();
+                    }
+                }
+            }
+            throw new AiServiceException("Empty response from LLM API");
+        } catch (AiServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("OpenAI compatible multi-turn API call failed: {}", e.getMessage());
+            throw new AiServiceException("API call failed: " + e.getMessage(), e);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private String callAnthropicApiMultiTurn(String baseUrl, String apiKey, String model,
+                                              List<Map<String, Object>> messages,
+                                              int maxTokens, double temperature) {
+        try {
+            String url = baseUrl.replaceAll("/+$", "") + "/v1/messages";
+
+            // Anthropic 的 system prompt 是顶层字段，从 messages 中提取
+            String systemPrompt = null;
+            List<Map<String, Object>> userMessages = new ArrayList<>();
+            for (Map<String, Object> msg : messages) {
+                if ("system".equals(msg.get("role"))) {
+                    systemPrompt = msg.get("content").toString();
+                } else {
+                    userMessages.add(msg);
+                }
+            }
+
+            // 转换为 Anthropic 的 content 格式
+            List<Map<String, Object>> anthropicMessages = new ArrayList<>();
+            for (Map<String, Object> msg : userMessages) {
+                Map<String, Object> textContent = new LinkedHashMap<>();
+                textContent.put("type", "text");
+                textContent.put("text", msg.get("content").toString());
+
+                Map<String, Object> contentItem = new LinkedHashMap<>();
+                contentItem.put("role", msg.get("role"));
+                contentItem.put("content", Collections.singletonList(textContent));
+                anthropicMessages.add(contentItem);
+            }
+
+            Map<String, Object> requestBody = new LinkedHashMap<>();
+            requestBody.put("model", model);
+            requestBody.put("max_tokens", maxTokens);
+            requestBody.put("temperature", temperature);
+            if (systemPrompt != null && !systemPrompt.isEmpty()) {
+                requestBody.put("system", systemPrompt);
+            }
+            requestBody.put("messages", anthropicMessages);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("x-api-key", apiKey);
+            headers.set("anthropic-version", "2023-06-01");
+
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+            ResponseEntity<Map> response = restTemplate.postForEntity(url, request, Map.class);
+
+            if (response.getBody() != null) {
+                List<Map<String, Object>> contentList = (List<Map<String, Object>>) response.getBody().get("content");
+                if (contentList != null && !contentList.isEmpty()) {
+                    Object text = contentList.get(0).get("text");
+                    if (text != null) return text.toString();
+                }
+            }
+            throw new AiServiceException("Empty response from Anthropic API");
+        } catch (AiServiceException e) {
+            throw e;
+        } catch (Exception e) {
+            log.warn("Anthropic multi-turn API call failed: {}", e.getMessage());
+            throw new AiServiceException("Anthropic API call failed: " + e.getMessage(), e);
+        }
+    }
+
     private String callOpenAiCompatibleApi(String baseUrl, String apiKey, String model,
                                            String systemPrompt, String userPrompt,
                                            int maxTokens, double temperature,

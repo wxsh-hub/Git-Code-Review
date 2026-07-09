@@ -121,9 +121,9 @@ public class GenerationOrchestrator {
                     // Phase 8: 四页报告结构组装
                     // 第一~三页: 管理摘要 → 问题处置页 → 模块与趋势页（来自审查报告）
                     // 第四页: 效率与贡献附录（贡献者统计 + 效率分析）
-                    boolean hasReview = request.isUseCodeReview() && result.getReviewContent() != null;
-                    // 当启用代码审查时，自动启用效率分析
-                    boolean hasEfficiency = (request.isUseEfficiencyAnalysis() || request.isUseCodeReview()) && result.getEfficiencyContent() != null;
+                    boolean hasReview = (request.isUseCodeReview() || request.isUseOcrDeepScan()) && result.getReviewContent() != null;
+                    // 当启用代码审查或深度扫描时，自动启用效率分析
+                    boolean hasEfficiency = (request.isUseEfficiencyAnalysis() || request.isUseCodeReview() || request.isUseOcrDeepScan()) && result.getEfficiencyContent() != null;
 
                     StringBuilder merged = new StringBuilder();
 
@@ -369,7 +369,7 @@ public class GenerationOrchestrator {
         // Phase 7: reviewResult needs broader scope for cross-pipeline data sharing
         CodeReviewResult reviewResult = null;
 
-        if (result.isSuccess() && request.isUseCodeReview()) {
+        if (result.isSuccess() && (request.isUseCodeReview() || request.isUseOcrDeepScan())) {
             try {
                 ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
                 if (projectConfig != null) {
@@ -529,7 +529,7 @@ public class GenerationOrchestrator {
 
         // Developer efficiency analysis (after code review, merges into review content)
         // 当启用代码审查时，自动启用效率分析
-        if (result.isSuccess() && (request.isUseEfficiencyAnalysis() || request.isUseCodeReview())) {
+        if (result.isSuccess() && (request.isUseEfficiencyAnalysis() || request.isUseCodeReview() || request.isUseOcrDeepScan())) {
             try {
                 ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
                 if (projectConfig != null) {
