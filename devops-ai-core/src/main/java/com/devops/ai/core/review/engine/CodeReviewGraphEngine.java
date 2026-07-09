@@ -160,7 +160,10 @@ public class CodeReviewGraphEngine {
         if (!cycles.isEmpty()) {
             riskLevel = "HIGH";
             for (List<String> cycle : cycles) {
-                riskSignals.add("循环依赖: " + String.join(" → ", cycle) + " → " + cycle.get(0));
+                String cyclePath = String.join(" → ", cycle) + " → " + cycle.get(0);
+                // 收集循环依赖的具体 import 证据
+                String evidence = collectCycleEvidence(cycle, parsedFiles, fileToModule);
+                riskSignals.add("循环依赖: " + cyclePath + "\n  证据:\n" + evidence);
             }
         }
 
@@ -277,9 +280,17 @@ public class CodeReviewGraphEngine {
                 // 检查被引用的类是否属于 DAO/Repository 层
                 if (isDaoLayer(targetFile)) {
                     String targetModule = fileToModule.getOrDefault(targetFile, "?");
-                    violations.add(String.format("%s (Controller,%s) 直接依赖 %s (DAO,%s) — 应通过 Service 层隔离",
-                            extractFileName(pf.filePath), pf.module,
-                            extractFileName(targetFile), targetModule));
+                    String controllerDesc = extractFileDescription(pf.filePath, pf.parser);
+                    String daoDesc = extractFileDescription(targetFile, null);
+
+                    violations.add(String.format(
+                            "分层违规: %s (%s, %s) 直接依赖 %s (%s, %s) — 应通过 Service 层隔离\n" +
+                            "  证据:\n" +
+                            "    • %s import %s\n" +
+                            "    • 调用: 直接访问数据层，绕过业务层",
+                            extractFileName(pf.filePath), pf.module, controllerDesc,
+                            extractFileName(targetFile), targetModule, daoDesc,
+                            extractFileName(pf.filePath), imp));
                 }
 
                 // 检查是否跨模块直接引用 Service（同模块的 Service 引用是正常的）
@@ -296,6 +307,133 @@ public class CodeReviewGraphEngine {
     // ================================================================
     // 工具方法
     // ================================================================
+
+    /**
+     * 收集循环依赖的具体 import 证据。
+     * 遍历循环路径中的每个模块，找出导致依赖的具体文件和 import 语句。
+     */
+    private String collectCycleEvidence(List<String> cycle, List<ParsedFile> parsedFiles,
+                                         Map<String, String> fileToModule) {
+        StringBuilder sb = new StringBuilder();
+        Set<String> seen = new HashSet<>();
+
+        // 遍历循环路径中的每对相邻模块
+        for (int i = 0; i < cycle.size(); i++) {
+            String fromModule = cycle.get(i);
+            String toModule = cycle.get((i + 1) % cycle.size());
+
+            // 找出从 fromModule 到 toModule 的具体 import
+            for (ParsedFile pf : parsedFiles) {
+                if (!pf.module.equals(fromModule)) continue;
+
+                for (String imp : pf.parser.getImports()) {
+                    if (isJdkImport(imp) || !imp.contains(".")) continue;
+
+                    // 检查这个 import 是否指向 toModule 中的文件
+                    String targetFile = null;
+                    for (ParsedFile target : parsedFiles) {
+                        if (target.module.equals(toModule)) {
+                            String pkg = target.parser.getPackageName();
+                            if (pkg != null && imp.startsWith(pkg + ".")) {
+                                targetFile = target.filePath;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (targetFile != null) {
+                        String key = pf.filePath + " → " + targetFile;
+                        if (!seen.contains(key)) {
+                            seen.add(key);
+                            String fromDesc = extractFileDescription(pf.filePath, pf.parser);
+                            String toDesc = extractFileDescription(targetFile, null);
+                            sb.append("    • ").append(extractFileName(pf.filePath))
+                              .append(" (").append(fromModule).append(", ").append(fromDesc).append(")\n");
+                            sb.append("      import ").append(imp).append("\n");
+                            sb.append("      → ").append(extractFileName(targetFile))
+                              .append(" (").append(toModule).append(", ").append(toDesc).append(")\n\n");
+                        }
+                    }
+                }
+            }
+        }
+
+        return sb.length() > 0 ? sb.toString() : "    (未找到具体 import 证据)\n";
+    }
+
+    /**
+     * 提取文件的一句话职责描述。
+     * 优先根据类名和包名推断，返回简洁的描述。
+     */
+    private String extractFileDescription(String filePath, JavaFileParser parser) {
+        String fileName = extractFileName(filePath);
+        String lower = fileName.toLowerCase();
+
+        // 根据类名模式推断职责
+        if (lower.endsWith("controller.java")) {
+            return "接口层，处理 HTTP 请求";
+        } else if (lower.endsWith("service.java") || lower.endsWith("serviceimpl.java")) {
+            return "业务层，处理业务逻辑";
+        } else if (lower.endsWith("dao.java") || lower.endsWith("repository.java")) {
+            return "数据访问层，操作数据库";
+        } else if (lower.endsWith("mapper.java")) {
+            return "数据映射层，SQL 映射";
+        } else if (lower.endsWith("dto.java")) {
+            return "数据传输对象";
+        } else if (lower.endsWith("vo.java")) {
+            return "视图对象";
+        } else if (lower.endsWith("entity.java") || lower.endsWith("model.java")) {
+            return "实体类";
+        } else if (lower.endsWith("config.java") || lower.endsWith("configuration.java")) {
+            return "配置类";
+        } else if (lower.endsWith("util.java") || lower.endsWith("utils.java") || lower.endsWith("helper.java")) {
+            return "工具类";
+        } else if (lower.endsWith("exception.java")) {
+            return "异常类";
+        } else if (lower.endsWith("handler.java")) {
+            return "处理器";
+        } else if (lower.endsWith("listener.java")) {
+            return "监听器";
+        } else if (lower.endsWith("scheduler.java") || lower.endsWith("job.java")) {
+            return "定时任务";
+        } else if (lower.endsWith("client.java")) {
+            return "客户端";
+        } else if (lower.endsWith("factory.java")) {
+            return "工厂类";
+        } else if (lower.endsWith("builder.java")) {
+            return "构建器";
+        } else if (lower.endsWith("manager.java")) {
+            return "管理器";
+        } else if (lower.endsWith("resolver.java")) {
+            return "解析器";
+        } else if (lower.endsWith("converter.java")) {
+            return "转换器";
+        } else if (lower.endsWith("validator.java")) {
+            return "验证器";
+        }
+
+        // 根据包名推断
+        if (parser != null && parser.getPackageName() != null) {
+            String pkg = parser.getPackageName().toLowerCase();
+            if (pkg.contains(".controller")) {
+                return "接口层";
+            } else if (pkg.contains(".service")) {
+                return "业务层";
+            } else if (pkg.contains(".dao") || pkg.contains(".repository") || pkg.contains(".mapper")) {
+                return "数据访问层";
+            } else if (pkg.contains(".model") || pkg.contains(".entity")) {
+                return "实体类";
+            } else if (pkg.contains(".dto")) {
+                return "DTO";
+            } else if (pkg.contains(".config")) {
+                return "配置";
+            } else if (pkg.contains(".util")) {
+                return "工具类";
+            }
+        }
+
+        return "业务类";
+    }
 
     private String determineNodeType(String filePath) {
         if (isController(filePath)) return "controller";
