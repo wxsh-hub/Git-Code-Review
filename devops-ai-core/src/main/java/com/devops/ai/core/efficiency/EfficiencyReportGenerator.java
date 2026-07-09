@@ -214,7 +214,7 @@ public class EfficiencyReportGenerator {
 
             String file = f.getFile() != null ? f.getFile() : "-";
             String line = f.getStartLine() > 0 ? f.getStartLine() + "-" + f.getEndLine() : "-";
-            String desc = f.getEvidence() != null ? truncate(f.getEvidence(), 30) : "-";
+            String desc = f.getTrigger() != null ? f.getTrigger().replace("\n", " ").trim() : "-";
             String sev = f.getSeverity().getLevel();
             String owner = f.getOwner() != null && !f.getOwner().isEmpty() ? f.getOwner() : "待指派";
             String commits = f.getBlameCommitIds() != null && !f.getBlameCommitIds().isEmpty()
