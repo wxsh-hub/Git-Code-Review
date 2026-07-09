@@ -49,6 +49,18 @@ public class GenerationLog {
     @Column(name = "review_output_path", length = 500)
     private String reviewOutputPath;
 
+    @Column(name = "summary_output_path", length = 500)
+    private String summaryOutputPath;        // 管理摘要
+
+    @Column(name = "disposition_output_path", length = 500)
+    private String dispositionOutputPath;    // 问题处置页
+
+    @Column(name = "module_output_path", length = 500)
+    private String moduleOutputPath;         // 模块与趋势页
+
+    @Column(name = "appendix_output_path", length = 500)
+    private String appendixOutputPath;       // 效率与贡献附录
+
     @PrePersist
     protected void onCreate() {
         createdAt = new Date();
@@ -156,5 +168,37 @@ public class GenerationLog {
 
     public void setReviewOutputPath(String reviewOutputPath) {
         this.reviewOutputPath = reviewOutputPath;
+    }
+
+    public String getSummaryOutputPath() {
+        return summaryOutputPath;
+    }
+
+    public void setSummaryOutputPath(String summaryOutputPath) {
+        this.summaryOutputPath = summaryOutputPath;
+    }
+
+    public String getDispositionOutputPath() {
+        return dispositionOutputPath;
+    }
+
+    public void setDispositionOutputPath(String dispositionOutputPath) {
+        this.dispositionOutputPath = dispositionOutputPath;
+    }
+
+    public String getModuleOutputPath() {
+        return moduleOutputPath;
+    }
+
+    public void setModuleOutputPath(String moduleOutputPath) {
+        this.moduleOutputPath = moduleOutputPath;
+    }
+
+    public String getAppendixOutputPath() {
+        return appendixOutputPath;
+    }
+
+    public void setAppendixOutputPath(String appendixOutputPath) {
+        this.appendixOutputPath = appendixOutputPath;
     }
 }

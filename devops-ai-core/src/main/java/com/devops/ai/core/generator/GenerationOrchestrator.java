@@ -122,32 +122,40 @@ public class GenerationOrchestrator {
                     // 第一~三页: 管理摘要 → 问题处置页 → 模块与趋势页（来自审查报告）
                     // 第四页: 效率与贡献附录（贡献者统计 + 效率分析）
                     boolean hasReview = request.isUseCodeReview() && result.getReviewContent() != null;
-                    boolean hasEfficiency = request.isUseEfficiencyAnalysis() && result.getEfficiencyContent() != null;
+                    // 当启用代码审查时，自动启用效率分析
+                    boolean hasEfficiency = (request.isUseEfficiencyAnalysis() || request.isUseCodeReview()) && result.getEfficiencyContent() != null;
 
                     StringBuilder merged = new StringBuilder();
+
+                    // 拆分报告内容
+                    String summaryContent = result.getSummaryContent();
+                    String dispositionContent = result.getDispositionContent();
+                    String moduleContent = result.getModuleContent();
 
                     if (hasReview) {
                         merged.append(result.getReviewContent());
                     }
 
+                    // 第四页：效率与贡献附录
+                    StringBuilder appendixSb = new StringBuilder();
+                    appendixSb.append("# 效率与贡献附录\n\n");
+                    appendixSb.append(result.getContent());
+                    if (hasEfficiency) {
+                        appendixSb.append("\n").append(result.getEfficiencyContent());
+                    }
+                    result.setAppendixContent(appendixSb.toString());
+
                     if (hasEfficiency || hasReview) {
                         if (merged.length() > 0) {
                             merged.append("\n---\n\n");
                         }
-                        merged.append("# 效率与贡献附录\n\n");
-
-                        // 贡献者分析（来自基础报告）
-                        merged.append(result.getContent());
-
-                        // 效率分析内容
-                        if (hasEfficiency) {
-                            merged.append("\n").append(result.getEfficiencyContent());
-                        }
+                        merged.append(appendixSb);
                     }
 
                     result.setContent(merged.toString());
                     logEntry.setHasReview(hasReview);
 
+                    // 保存整合报告
                     String extension = "html".equals(result.getFormat()) ? "html" : "md";
                     java.io.File outputDir = new java.io.File("output");
                     if (!outputDir.exists()) {
@@ -158,6 +166,32 @@ public class GenerationOrchestrator {
                     String outputUrl = "/output/" + taskId + "." + extension;
                     logEntry.setOutputPath(outputUrl);
                     log.info("Document saved to: {} (URL: {})", outputFile.getAbsolutePath(), outputUrl);
+
+                    // 保存四个拆分的报告文件
+                    if (summaryContent != null && !summaryContent.isEmpty()) {
+                        java.io.File summaryFile = new java.io.File(outputDir, taskId + "_summary." + extension);
+                        java.nio.file.Files.write(summaryFile.toPath(), summaryContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        logEntry.setSummaryOutputPath("/output/" + taskId + "_summary." + extension);
+                        log.info("Summary report saved to: {}", summaryFile.getAbsolutePath());
+                    }
+                    if (dispositionContent != null && !dispositionContent.isEmpty()) {
+                        java.io.File dispositionFile = new java.io.File(outputDir, taskId + "_disposition." + extension);
+                        java.nio.file.Files.write(dispositionFile.toPath(), dispositionContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        logEntry.setDispositionOutputPath("/output/" + taskId + "_disposition." + extension);
+                        log.info("Disposition report saved to: {}", dispositionFile.getAbsolutePath());
+                    }
+                    if (moduleContent != null && !moduleContent.isEmpty()) {
+                        java.io.File moduleFile = new java.io.File(outputDir, taskId + "_module." + extension);
+                        java.nio.file.Files.write(moduleFile.toPath(), moduleContent.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        logEntry.setModuleOutputPath("/output/" + taskId + "_module." + extension);
+                        log.info("Module report saved to: {}", moduleFile.getAbsolutePath());
+                    }
+                    if (result.getAppendixContent() != null && !result.getAppendixContent().isEmpty()) {
+                        java.io.File appendixFile = new java.io.File(outputDir, taskId + "_appendix." + extension);
+                        java.nio.file.Files.write(appendixFile.toPath(), result.getAppendixContent().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        logEntry.setAppendixOutputPath("/output/" + taskId + "_appendix." + extension);
+                        log.info("Appendix report saved to: {}", appendixFile.getAbsolutePath());
+                    }
                 }
                 if (!result.isSuccess()) {
                     logEntry.setErrorMessage(result.getErrorMessage());
@@ -477,6 +511,11 @@ public class GenerationOrchestrator {
                         String reviewFormat = request.getReviewFormat() != null ? request.getReviewFormat() : "markdown";
                         String reviewContent = reviewReportGenerator.generate(reviewResult, reviewContext, reviewFormat);
                         result.setReviewContent(reviewContent);
+
+                        // 传递拆分报告内容到 DocumentResult
+                        result.setSummaryContent(reviewResult.getSummaryContent());
+                        result.setDispositionContent(reviewResult.getDispositionContent());
+                        result.setModuleContent(reviewResult.getModuleContent());
                     } else {
                         log.warn("Code review skipped: cannot determine commit hash range");
                     }
@@ -489,7 +528,8 @@ public class GenerationOrchestrator {
         }
 
         // Developer efficiency analysis (after code review, merges into review content)
-        if (result.isSuccess() && request.isUseEfficiencyAnalysis()) {
+        // 当启用代码审查时，自动启用效率分析
+        if (result.isSuccess() && (request.isUseEfficiencyAnalysis() || request.isUseCodeReview())) {
             try {
                 ProjectConfig projectConfig = projectConfigRepository.findByProjectCode(request.getProjectName());
                 if (projectConfig != null) {

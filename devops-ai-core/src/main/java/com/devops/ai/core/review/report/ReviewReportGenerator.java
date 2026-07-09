@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.Calendar;
+import java.util.stream.Collectors;
 
 @Component
 public class ReviewReportGenerator {
@@ -57,29 +58,62 @@ public class ReviewReportGenerator {
         return generateFindingsMarkdown(result, context);
     }
 
+    /**
+     * 分别生成三个独立的报告内容，用于拆分下载。
+     * 返回数组: [管理摘要, 问题处置页, 模块与趋势页]
+     */
+    public String[] generateSplitReports(CodeReviewResult result, CodeReviewContext context) {
+        List<Finding> allFindings = result.getFindings();
+        List<Finding> confirmed = filterConfirmed(allFindings);
+
+        // 管理摘要
+        StringBuilder summarySb = new StringBuilder();
+        generateManagementSummary(summarySb, allFindings, confirmed, context);
+
+        // 问题处置页
+        StringBuilder dispositionSb = new StringBuilder();
+        generateDispositionPage(dispositionSb, confirmed, context);
+
+        // 模块与趋势页
+        String moduleContent = moduleReportGenerator.generate(confirmed);
+
+        return new String[] {
+            summarySb.toString(),
+            dispositionSb.toString(),
+            moduleContent
+        };
+    }
+
     private String generateFindingsMarkdown(CodeReviewResult result, CodeReviewContext context) {
         List<Finding> allFindings = result.getFindings();
         List<Finding> confirmed = filterConfirmed(allFindings);
+
+        // 生成拆分的三个独立内容
+        String[] splitReports = generateSplitReports(result, context);
+        result.setSummaryContent(splitReports[0]);
+        result.setDispositionContent(splitReports[1]);
+        result.setModuleContent(splitReports[2]);
+
         StringBuilder sb = new StringBuilder();
 
         // ================================================================
         // 第一页：管理摘要（数量 = allFindings，已确认 = confirmed）
         // ================================================================
-        generateManagementSummary(sb, allFindings, confirmed, context);
+        sb.append(splitReports[0]);
 
         sb.append("\n---\n\n");
 
         // ================================================================
         // 第二页：问题处置页（只列确认的缺陷）
         // ================================================================
-        generateDispositionPage(sb, confirmed, context);
+        sb.append(splitReports[1]);
 
         sb.append("\n---\n\n");
 
         // ================================================================
         // 第三页：模块与趋势页（只统计确认的缺陷）
         // ================================================================
-        sb.append(moduleReportGenerator.generate(confirmed));
+        sb.append(splitReports[2]);
 
         log.info("Phase 8 four-page report generated (markdown, {} confirmed / {} total findings, {} chars)",
                 confirmed.size(), allFindings != null ? allFindings.size() : 0, sb.length());
@@ -176,6 +210,57 @@ public class ReviewReportGenerator {
         } else {
             sb.append("✅ **建议发布** — 无阻断/高危问题，可正常上线\n\n");
         }
+
+        // 6) 待处理任务分配
+        sb.append("### 待处理任务\n\n");
+        // 按处理人分组统计
+        Map<String, List<Finding>> byHandler = new LinkedHashMap<>();
+        for (Finding f : confirmedFindings) {
+            String handler = f.getCandidateHandler();
+            if (handler == null || handler.isEmpty()) {
+                handler = "未分配";
+            }
+            byHandler.computeIfAbsent(handler, k -> new ArrayList<>()).add(f);
+        }
+
+        sb.append("| 处理人 | 问题数 | 最早截止 | 问题级别 |\n");
+        sb.append("|--------|--------|----------|----------|\n");
+
+        for (Map.Entry<String, List<Finding>> entry : byHandler.entrySet()) {
+            String handler = entry.getKey();
+            List<Finding> findings = entry.getValue();
+            int count = findings.size();
+
+            // 找最早截止时间
+            String earliestDeadline = "-";
+            for (Finding f : findings) {
+                String deadline = computeDeadline(f.getSeverity(), context.getReviewDate());
+                if (!"-".equals(deadline) && !"立即".equals(deadline)) {
+                    if ("-".equals(earliestDeadline) || deadline.compareTo(earliestDeadline) < 0) {
+                        earliestDeadline = deadline;
+                    }
+                } else if ("立即".equals(deadline)) {
+                    earliestDeadline = "立即";
+                    break;
+                }
+            }
+
+            // 统计问题级别分布
+            Map<String, Integer> severityCount = new LinkedHashMap<>();
+            for (Finding f : findings) {
+                String level = f.getSeverity() != null ? f.getSeverity().getLevel() : "?";
+                severityCount.merge(level, 1, Integer::sum);
+            }
+            String severityDist = severityCount.entrySet().stream()
+                    .map(e -> e.getKey() + "×" + e.getValue())
+                    .collect(Collectors.joining(" "));
+
+            sb.append("| ").append(handler).append(" | ")
+                    .append(count).append(" | ")
+                    .append(earliestDeadline).append(" | ")
+                    .append(severityDist).append(" |\n");
+        }
+        sb.append("\n");
 
         // 具体问题见下页（第二页：问题处置页）
         sb.append("> 具体问题及修复建议请见 [问题处置页](#问题处置页)\n\n");

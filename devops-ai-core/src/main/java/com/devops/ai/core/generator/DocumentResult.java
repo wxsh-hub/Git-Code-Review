@@ -16,6 +16,12 @@ public class DocumentResult {
     /** Phase 8: 效率分析内容，独立于审查报告，用于四页结构组装 */
     private String efficiencyContent;
 
+    // 拆分报告的四个独立内容
+    private String summaryContent;        // 管理摘要
+    private String dispositionContent;    // 问题处置页
+    private String moduleContent;         // 模块与趋势页
+    private String appendixContent;       // 效率与贡献附录
+
     public DocumentResult() {
     }
 
@@ -103,5 +109,37 @@ public class DocumentResult {
 
     public void setEfficiencyContent(String efficiencyContent) {
         this.efficiencyContent = efficiencyContent;
+    }
+
+    public String getSummaryContent() {
+        return summaryContent;
+    }
+
+    public void setSummaryContent(String summaryContent) {
+        this.summaryContent = summaryContent;
+    }
+
+    public String getDispositionContent() {
+        return dispositionContent;
+    }
+
+    public void setDispositionContent(String dispositionContent) {
+        this.dispositionContent = dispositionContent;
+    }
+
+    public String getModuleContent() {
+        return moduleContent;
+    }
+
+    public void setModuleContent(String moduleContent) {
+        this.moduleContent = moduleContent;
+    }
+
+    public String getAppendixContent() {
+        return appendixContent;
+    }
+
+    public void setAppendixContent(String appendixContent) {
+        this.appendixContent = appendixContent;
     }
 }

@@ -26,6 +26,11 @@ public class CodeReviewResult {
     // --- Phase 4: 审查流水线产出的统一 Finding 列表 ---
     private List<Finding> findings = new ArrayList<>();         // OCR→Finding 转换后的统一问题列表
 
+    // --- 拆分报告内容 ---
+    private String summaryContent;        // 管理摘要
+    private String dispositionContent;    // 问题处置页
+    private String moduleContent;         // 模块与趋势页
+
     // --- 旧字段 getter/setter ---
     public String getChangeSummary() { return changeSummary; }
     public void setChangeSummary(String changeSummary) { this.changeSummary = changeSummary; }
@@ -70,4 +75,12 @@ public class CodeReviewResult {
     public boolean hasOcrComments() {
         return ocrComments != null && !ocrComments.isEmpty();
     }
+
+    // --- 拆分报告 getter/setter ---
+    public String getSummaryContent() { return summaryContent; }
+    public void setSummaryContent(String summaryContent) { this.summaryContent = summaryContent; }
+    public String getDispositionContent() { return dispositionContent; }
+    public void setDispositionContent(String dispositionContent) { this.dispositionContent = dispositionContent; }
+    public String getModuleContent() { return moduleContent; }
+    public void setModuleContent(String moduleContent) { this.moduleContent = moduleContent; }
 }

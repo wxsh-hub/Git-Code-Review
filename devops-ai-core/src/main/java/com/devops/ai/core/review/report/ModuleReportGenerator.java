@@ -133,8 +133,8 @@ public class ModuleReportGenerator {
             CategoryStats cs = byCategory.computeIfAbsent(cat, k -> new CategoryStats());
             cs.count++;
             cs.moduleCounts.merge(module, 1, Integer::sum);
-            if (cs.typicalExample == null && f.getEvidence() != null && !f.getEvidence().isEmpty()) {
-                cs.typicalExample = truncate(f.getEvidence(), 60);
+            if (cs.typicalExample == null && f.getTrigger() != null && !f.getTrigger().isEmpty()) {
+                cs.typicalExample = f.getTrigger().replace("\n", " ").trim();
             }
         }
 
@@ -186,6 +186,6 @@ public class ModuleReportGenerator {
         if (text == null) return "";
         String trimmed = text.replace("\n", " ").trim();
         if (trimmed.length() <= maxLen) return trimmed;
-        return trimmed.substring(0, maxLen) + "...";
+        return trimmed.substring(0, maxLen);
     }
 }
