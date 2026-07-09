@@ -121,6 +121,15 @@ public class HistoryController {
 
     @GetMapping("/download/{taskId}")
     public ResponseEntity<byte[]> downloadResult(@PathVariable String taskId) {
+        return downloadMergedReport(taskId);
+    }
+
+    @GetMapping("/download/merged/{taskId}")
+    public ResponseEntity<byte[]> downloadMerged(@PathVariable String taskId) {
+        return downloadMergedReport(taskId);
+    }
+
+    private ResponseEntity<byte[]> downloadMergedReport(String taskId) {
         GenerationLog logEntry = generationLogRepository.findByTaskId(taskId);
         if (logEntry == null || !"completed".equals(logEntry.getStatus()) || logEntry.getOutputPath() == null) {
             return ResponseEntity.notFound().build();
@@ -136,10 +145,60 @@ public class HistoryController {
             byte[] content = java.nio.file.Files.readAllBytes(file.toPath());
             MediaType mediaType = "html".equals(logEntry.getFormat())
                     ? MediaType.TEXT_HTML : MediaType.valueOf("text/markdown");
+            String filename = "整合__" + taskId + "." + extension;
+            String encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
             return ResponseEntity.ok()
                     .contentType(mediaType)
                     .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"CHANGELOG_" + taskId + "." + extension + "\"")
+                            "attachment; filename=\"" + encodedFilename + "\"; filename*=UTF-8''" + encodedFilename)
+                    .body(content);
+        } catch (Exception e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("/download/summary/{taskId}")
+    public ResponseEntity<byte[]> downloadSummary(@PathVariable String taskId) {
+        return downloadSplitReport(taskId, "_summary", "摘要");
+    }
+
+    @GetMapping("/download/disposition/{taskId}")
+    public ResponseEntity<byte[]> downloadDisposition(@PathVariable String taskId) {
+        return downloadSplitReport(taskId, "_disposition", "问题");
+    }
+
+    @GetMapping("/download/module/{taskId}")
+    public ResponseEntity<byte[]> downloadModule(@PathVariable String taskId) {
+        return downloadSplitReport(taskId, "_module", "模块");
+    }
+
+    @GetMapping("/download/appendix/{taskId}")
+    public ResponseEntity<byte[]> downloadAppendix(@PathVariable String taskId) {
+        return downloadSplitReport(taskId, "_appendix", "效率");
+    }
+
+    private ResponseEntity<byte[]> downloadSplitReport(String taskId, String suffix, String reportName) {
+        GenerationLog logEntry = generationLogRepository.findByTaskId(taskId);
+        if (logEntry == null || !"completed".equals(logEntry.getStatus())) {
+            return ResponseEntity.notFound().build();
+        }
+
+        String extension = "html".equals(logEntry.getFormat()) ? "html" : "md";
+        java.io.File file = new java.io.File("output", taskId + suffix + "." + extension);
+        if (!file.exists()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            byte[] content = java.nio.file.Files.readAllBytes(file.toPath());
+            MediaType mediaType = "html".equals(logEntry.getFormat())
+                    ? MediaType.TEXT_HTML : MediaType.valueOf("text/markdown");
+            String filename = reportName + "__" + taskId + "." + extension;
+            String encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8").replace("+", "%20");
+            return ResponseEntity.ok()
+                    .contentType(mediaType)
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"" + encodedFilename + "\"; filename*=UTF-8''" + encodedFilename)
                     .body(content);
         } catch (Exception e) {
             return ResponseEntity.notFound().build();
