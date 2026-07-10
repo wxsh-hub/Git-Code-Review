@@ -508,6 +508,18 @@ public class CodeReviewAiService {
         sb.append("- **严禁报告「依赖版本升级的风险」除非你能从 diff 中确认真的不兼容** — \n");
         sb.append("  版本号变了不代表有问题。只有当你看到新版本 API 确实与调用代码不兼容时才能报。\n");
         sb.append("  如果只是版本号变了但不确定影响，不要报 —— 你的 confidence 应该 < 0.5。\n\n");
+        sb.append("⚠️ **编译错误跳过规则（以下类型不要报告）**：\n");
+        sb.append("代码能成功构建并部署，说明不存在编译错误。以下类型即使在 diff 中看到疑似问题也不要报告：\n");
+        sb.append("1. **引用不存在的类/Bean/方法/字段** — 跨模块引用在 diff 中看不到是正常的，编译器会检查\n");
+        sb.append("2. **方法签名不匹配（参数类型/数量）** — 可能有重载，或定义在其他模块\n");
+        sb.append("3. **字段/属性类型不匹配** — 字段定义在其他模块的实体类/DTO 中\n");
+        sb.append("4. **未实现接口/抽象类方法** — 接口定义在其他模块\n");
+        sb.append("5. **@Override 签名与父类不一致** — 父类在其他模块\n");
+        sb.append("6. **泛型类型不匹配** — 泛型定义在其他模块\n");
+        sb.append("7. **@Value 引用的配置 key 不存在** — 配置可能在其他模块的 yml/properties 中\n");
+        sb.append("8. **MyBatis XML 的 resultType/parameterType 指向的类不存在** — 实体类在其他模块\n");
+        sb.append("9. **@MapperScan/@ComponentScan 扫描路径不存在** — 扫描目标在其他模块\n");
+        sb.append("10. **语法错误（缺引号、缺分号、缺括号）** — IDE 实时检查，不会提交到代码库\n\n");
         sb.append("**置信度校准规则**：\n");
         sb.append("- 确定是缺陷（有明确证据、diff 中就能证实的）→ confidence 0.85-0.99\n");
         sb.append("- 有趋势/特征但不完全确定（如代码模式像 bug，但缺少上下文证实）→ confidence ≤ 0.70\n");
@@ -555,7 +567,7 @@ public class CodeReviewAiService {
         sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
         sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
         sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？\n");
-        sb.append("□ COMPILE_ERROR - 编译错误：字符串字面量缺少闭合引号？缺少分号？引用了不存在的类/方法/字段？注解参数类型不对？方法签名改了但调用方未更新？Entity/DTO 缺少 Mapper XML 引用的属性？\n\n");
+        sb.append("~~COMPILE_ERROR - 编译错误~~ → **跳过**（见上方「编译错误跳过规则」）\n\n");
         sb.append("P2 中危（注意检查）：\n");
         sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？是否有不必要的对象创建？字符串拼接是否用 StringBuilder？\n");
         sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？是否有未使用的 import？\n\n");
@@ -1168,6 +1180,18 @@ public class CodeReviewAiService {
         sb.append("- 你**看不到其他模块的代码** — 如果 @Autowired 的 bean 定义在其他模块，不要报「bean 不存在」\n");
         sb.append("- 如果 import 了其他模块的类但看不到其源码，这是正常的，不要报「类不存在」\n");
         sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n\n");
+        sb.append("⚠️ **编译错误跳过规则（以下类型不要报告）**：\n");
+        sb.append("代码能成功构建并部署，说明不存在编译错误。以下类型即使看到疑似问题也不要报告：\n");
+        sb.append("1. **引用不存在的类/Bean/方法/字段** — 跨模块引用看不到是正常的，编译器会检查\n");
+        sb.append("2. **方法签名不匹配（参数类型/数量）** — 可能有重载，或定义在其他模块\n");
+        sb.append("3. **字段/属性类型不匹配** — 字段定义在其他模块的实体类/DTO 中\n");
+        sb.append("4. **未实现接口/抽象类方法** — 接口定义在其他模块\n");
+        sb.append("5. **@Override 签名与父类不一致** — 父类在其他模块\n");
+        sb.append("6. **泛型类型不匹配** — 泛型定义在其他模块\n");
+        sb.append("7. **@Value 引用的配置 key 不存在** — 配置可能在其他模块的 yml/properties 中\n");
+        sb.append("8. **MyBatis XML 的 resultType/parameterType 指向的类不存在** — 实体类在其他模块\n");
+        sb.append("9. **@MapperScan/@ComponentScan 扫描路径不存在** — 扫描目标在其他模块\n");
+        sb.append("10. **语法错误（缺引号、缺分号、缺括号）** — IDE 实时检查，不会提交到代码库\n\n");
 
         // 置信度校准规则（与 diff 模式一致）
         sb.append("**置信度校准规则**：\n");
@@ -1226,7 +1250,7 @@ public class CodeReviewAiService {
         sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
         sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
         sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？\n");
-        sb.append("□ COMPILE_ERROR - 编译错误：字符串字面量缺少闭合引号？缺少分号？引用了不存在的类/方法/字段？注解参数类型不对？方法签名改了但调用方未更新？Entity/DTO 缺少 Mapper XML 引用的属性？\n\n");
+        sb.append("~~COMPILE_ERROR - 编译错误~~ → **跳过**（见上方「编译错误跳过规则」）\n\n");
 
         // P2 中危
         sb.append("P2 中危（注意检查）：\n");

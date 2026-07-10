@@ -2,6 +2,7 @@ package com.devops.ai.core.review.ai;
 
 import com.devops.ai.core.review.model.FilterResult;
 import com.devops.ai.core.review.model.Finding;
+import com.devops.ai.core.review.model.FindingCategory;
 import com.devops.ai.core.review.model.FindingSeverity;
 import com.devops.ai.core.review.model.FindingStatus;
 import org.slf4j.Logger;
@@ -73,9 +74,12 @@ public class FindingVerifier {
         // 校验 2: 去重
         List<Finding> afterDedup = deduplicate(afterLineCheck);
 
+        // 校验 2.5: 编译错误过滤 — 代码能构建说明无编译错误，跨模块引用看不到是正常的
+        List<Finding> afterCompileFilter = filterCompileErrors(afterDedup, result);
+
         // 校验 3: 误报检测
         // 校验 4: 触发条件完整性
-        for (Finding f : afterDedup) {
+        for (Finding f : afterCompileFilter) {
             Finding current = f;
             boolean falsePositive = checkFalsePositive(current);
             boolean triggerDowngraded = checkTriggerCompleteness(current);
@@ -254,6 +258,34 @@ public class FindingVerifier {
             }
         }
         return result;
+    }
+
+    // ================================================================
+    // 校验 2.5: 编译错误过滤
+    // ================================================================
+
+    /**
+     * 过滤掉 COMPILE_ERROR 类别的 Finding。
+     *
+     * <p>代码能成功构建并部署，说明不存在编译错误。
+     * 跨模块引用的类/方法/字段/Bean 在其他模块定义是正常的，
+     * LLM 看不到其他模块代码时容易误判为编译错误。</p>
+     *
+     * @return 过滤后的 Finding 列表（不含 COMPILE_ERROR）
+     */
+    List<Finding> filterCompileErrors(List<Finding> findings, FilterResult result) {
+        List<Finding> filtered = new ArrayList<>();
+        for (Finding f : findings) {
+            if (f.getCategory() == FindingCategory.COMPILE_ERROR) {
+                log.info("Compile error filtered: file={}, lines={}-{}, evidence={}",
+                        f.getFile(), f.getStartLine(), f.getEndLine(),
+                        f.getEvidence() != null ? f.getEvidence().substring(0, Math.min(80, f.getEvidence().length())) : "(null)");
+                result.reject(f);
+            } else {
+                filtered.add(f);
+            }
+        }
+        return filtered;
     }
 
     // ================================================================

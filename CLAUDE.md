@@ -91,6 +91,26 @@ git push github master
 | `devops-ai-web/` | 前端 | web |
 | `pom.xml`、`sql/`、`docs/` | 后端 | origin |
 
+## Git 提交规范
+
+提交代码时遵守 Conventional Commits 规范：
+
+格式：`<type>(<scope>): <description>`
+
+- **type**：`feat`/`fix`/`docs`/`style`/`refactor`/`perf`/`test`/`chore`/`ci`/`revert`
+- **scope**：中文模块名（如 `审查引擎`、`报告生成`、`前端页面`）
+- **description**：中文动宾短语，不加句号，不超过 50 字符
+- **body**：说明为什么做、怎么做、影响范围
+- **不要**加 Co-Authored-By 行
+
+示例：
+```
+feat(深度扫描): 跳过编译错误类审查减少误判
+
+在 diff 模式和全量扫描模式的 prompt 中添加编译错误跳过规则，
+后置 FindingVerifier 过滤 COMPILE_ERROR 类别作为兜底。
+```
+
 ## 重新构建并重启
 
 ```bash
