@@ -1951,7 +1951,9 @@ public class CodeReviewAiService {
         sb.append("- 你可以看到本模块内所有文件，跨文件调用关系可以完整分析\n");
         sb.append("- 你**看不到其他模块的代码** — 如果 @Autowired 的 bean 定义在其他模块，不要报「bean 不存在」\n");
         sb.append("- 如果 import 了其他模块的类但看不到其源码，这是正常的，不要报「类不存在」\n");
-        sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n\n");
+        sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n");
+        sb.append("- **行号必须是源文件的原始行号**，文件可能被截断，但行号从第 1 行开始计数，不要从截断点重新计数\n");
+        sb.append("- **审查代码时必须检查所在方法/类的注解**（如 @Transactional、@Async、@Cacheable、@Scheduled 等），不要只看代码片段本身\n\n");
 
         // 编译错误跳过规则
         sb.append("## 编译错误跳过规则（以下类型不要报告）\n");
@@ -1987,7 +1989,7 @@ public class CodeReviewAiService {
         sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
         sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return？\n");
         sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值是否处理？equals/hashCode 是否成对？BigDecimal 精度？\n\n");
+        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值是否处理？equals/hashCode 是否成对？BigDecimal 精度？MyBatis XML 中同名 select/insert/update/delete id 重复？\n\n");
 
         sb.append("P2 中危（注意检查）：\n");
         sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？字符串拼接是否用 StringBuilder？\n");

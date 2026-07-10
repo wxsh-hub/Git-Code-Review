@@ -103,11 +103,12 @@ public class FindingVerifier {
     // ================================================================
 
     /**
-     * 检查行号合法性：
+     * 检查行号合法性，并尝试用 evidence 修正行号：
      * <ul>
      *   <li>startLine ≤ 0 → 拒绝</li>
      *   <li>endLine < startLine → 自动修正 endLine = startLine</li>
-     *   <li>startLine > 文件总行数 → 拒绝</li>
+     *   <li>startLine > 文件总行数 → 尝试用 evidence 搜索修正，失败则拒绝</li>
+     *   <li>行号在范围内但偏差较大 → 尝试用 evidence 搜索修正</li>
      * </ul>
      */
     List<Finding> checkLineAccuracy(List<Finding> findings, String repoPath, FilterResult result) {
@@ -128,14 +129,71 @@ public class FindingVerifier {
             // 读取文件检查行号上界
             int totalLines = countFileLines(repoPath, f.getFile());
             if (totalLines > 0 && f.getStartLine() > totalLines) {
-                log.warn("Finding rejected: startLine={} exceeds file total lines={} for {}",
-                        f.getStartLine(), totalLines, f.getFile());
-                result.reject(f);
-                continue;
+                // 行号越界，尝试用 evidence 搜索修正
+                int corrected = findLineByEvidence(repoPath, f.getFile(), f.getEvidence());
+                if (corrected > 0) {
+                    log.info("Finding line corrected: {} → {} for {} (evidence match)",
+                            f.getStartLine(), corrected, f.getFile());
+                    f.setStartLine(corrected);
+                    f.setEndLine(corrected + (f.getEndLine() - f.getStartLine()));
+                } else {
+                    // evidence 搜索也找不到，设为第 1 行
+                    log.info("Finding line fallback: {} → 1 for {} (evidence not found, defaulting to line 1)",
+                            f.getStartLine(), f.getFile());
+                    f.setStartLine(1);
+                    f.setEndLine(1);
+                }
+            } else if (totalLines > 0 && f.getEvidence() != null && !f.getEvidence().isEmpty()) {
+                // 行号在范围内，但检查 evidence 是否真的在该行附近
+                int corrected = findLineByEvidence(repoPath, f.getFile(), f.getEvidence());
+                if (corrected > 0 && Math.abs(corrected - f.getStartLine()) > 10) {
+                    log.info("Finding line adjusted: {} → {} for {} (evidence at different line, diff={})",
+                            f.getStartLine(), corrected, f.getFile(), Math.abs(corrected - f.getStartLine()));
+                    f.setStartLine(corrected);
+                    f.setEndLine(corrected + (f.getEndLine() - f.getStartLine()));
+                }
             }
             valid.add(f);
         }
         return valid;
+    }
+
+    /**
+     * 用 evidence 的第一行非空文本在源文件中搜索，返回匹配的行号。
+     * 返回 -1 表示未找到。
+     */
+    private int findLineByEvidence(String repoPath, String filePath, String evidence) {
+        if (evidence == null || evidence.isEmpty() || filePath == null) return -1;
+
+        // 取 evidence 的第一行非空文本作为搜索关键词
+        String[] lines = evidence.split("\n");
+        String searchText = null;
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && trimmed.length() > 5) {
+                searchText = trimmed;
+                break;
+            }
+        }
+        if (searchText == null) return -1;
+
+        // 读取源文件，逐行搜索
+        File file = new File(repoPath, filePath);
+        if (!file.exists() || !file.isFile()) return -1;
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            String line;
+            int lineNum = 0;
+            while ((line = reader.readLine()) != null) {
+                lineNum++;
+                if (line.contains(searchText)) {
+                    return lineNum;
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Failed to search evidence in {}: {}", filePath, e.getMessage());
+        }
+        return -1;
     }
 
     // ================================================================
