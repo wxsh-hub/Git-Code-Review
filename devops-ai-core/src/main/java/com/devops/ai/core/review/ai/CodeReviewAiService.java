@@ -1945,6 +1945,21 @@ public class CodeReviewAiService {
         sb.append("- 如果你确定没有问题，confirmed 输出空数组，done=true\n");
         sb.append("- **每个 finding 只报告一个问题**，不要用 --- 或换行合并多个问题到一个 finding 中\n\n");
 
+        // 必须 grep 硬规则
+        sb.append("## 必须 grep 硬规则（违反则该 finding 作废）\n");
+        sb.append("以下类型的问题，如果你没有通过 grep 看到方法的**完整实现**（包括循环体、后续操作、方法注解），\n");
+        sb.append("**禁止**直接报到 confirmed，必须先用 grep_requests 确认：\n");
+        sb.append("1. **事务缺失** — 必须先确认：\n");
+        sb.append("   - 该方法不是框架内置方法（MyBatis-Plus 的 removeByIds/saveBatch/updateBatchById/removeBatchByIds 底层是单次SQL，不需要事务）\n");
+        sb.append("   - 循环体内的每一步操作确实需要在同一事务中（逐行处理+catch的批处理模式不应包事务）\n");
+        sb.append("2. **并发问题** — 必须先确认：\n");
+        sb.append("   - 变量是共享可变的（类字段/static），而不是方法内局部变量\n");
+        sb.append("   - 确实存在多线程同时访问的场景\n");
+        sb.append("3. **资源泄漏** — 必须先确认：\n");
+        sb.append("   - 没有 try-with-resources 或框架自动关闭机制（如 Hutool HttpRequest 自动管理连接）\n");
+        sb.append("   - 资源确实被创建后未关闭\n");
+        sb.append("如果你无法 grep 确认（如超出轮次限制），该 finding 的 confidence 必须 ≤ 0.60\n\n");
+
         // 全量模式注意事项
         sb.append("## 全量扫描模式说明\n");
         sb.append("- 你看到的是模块内文件的完整源码（非 diff），请基于完整代码上下文审查\n");

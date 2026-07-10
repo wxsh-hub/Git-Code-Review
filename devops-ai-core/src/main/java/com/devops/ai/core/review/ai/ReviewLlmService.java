@@ -13,6 +13,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,6 +55,9 @@ public class ReviewLlmService {
 
     /** 并发线程数 */
     private static final int CONCURRENCY = 8;
+
+    /** evidence 上下文扩展行数 */
+    private static final int CONTEXT_MARGIN = 15;
 
     private static final String SYSTEM_PROMPT =
             "你是一个资深的代码审查专家。请独立判断以下代码是否存在真实缺陷，" +
@@ -115,6 +123,8 @@ public class ReviewLlmService {
             return findings;
         }
 
+        String repoPath = context.getRepoPath();
+
         // 只取 P0/P1/P2
         List<Finding> high = new ArrayList<>();
         for (Finding f : findings) {
@@ -134,7 +144,7 @@ public class ReviewLlmService {
         for (Finding f : high) {
             futures.add(executor.submit(() -> {
                 try {
-                    String response = callReviewLlm(provider, apiKey, apiUrl, model, f);
+                    String response = callReviewLlm(provider, apiKey, apiUrl, model, f, repoPath);
                     ReviewOutput output = parseReviewResponse(response);
                     if (output != null) {
                         synchronized (f) {
@@ -176,8 +186,8 @@ public class ReviewLlmService {
     // ================================================================
 
     private String callReviewLlm(String provider, String apiKey, String apiUrl,
-                                 String model, Finding f) {
-        String userPrompt = buildUserPrompt(f);
+                                 String model, Finding f, String repoPath) {
+        String userPrompt = buildUserPrompt(f, repoPath);
         log.debug("Calling review LLM for finding {} ({} lines {}-{})",
                 f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
         return llmClient.call(provider, apiKey, apiUrl, model,
@@ -186,16 +196,19 @@ public class ReviewLlmService {
 
     /**
      * 构建 review LLM 的用户提示词。
+     * evidence 优先从源文件扩展到上下各 CONTEXT_MARGIN 行，提供更完整的上下文。
      */
-    private String buildUserPrompt(Finding f) {
+    private String buildUserPrompt(Finding f, String repoPath) {
         StringBuilder sb = new StringBuilder();
         sb.append("请判断以下代码是否存在问题：\n\n");
 
         sb.append("文件: ").append(f.getFile() != null ? f.getFile() : "unknown").append("\n");
         sb.append("行号: ").append(f.getStartLine()).append("-").append(f.getEndLine()).append("\n\n");
 
-        sb.append("证据代码:\n```\n");
-        sb.append(f.getEvidence() != null ? f.getEvidence() : "(无)").append("\n```\n\n");
+        // 尝试从源文件扩展 evidence 上下文
+        String expandedEvidence = expandEvidence(f, repoPath);
+        sb.append("代码上下文:\n```\n");
+        sb.append(expandedEvidence).append("\n```\n\n");
 
         sb.append("初步判定:\n");
         sb.append("- 严重度: ").append(formatSeverity(f.getSeverity())).append("\n");
@@ -220,6 +233,45 @@ public class ReviewLlmService {
 
         sb.append("\n请输出你的独立评估（JSON 格式）：");
         return sb.toString();
+    }
+
+    /**
+     * 从源文件读取 evidence 上下文：[startLine - MARGIN, endLine + MARGIN]。
+     * 读取失败时回退到原始 evidence。
+     */
+    private String expandEvidence(Finding f, String repoPath) {
+        if (repoPath == null || f.getFile() == null || f.getStartLine() <= 0) {
+            return f.getEvidence() != null ? f.getEvidence() : "(无)";
+        }
+
+        File sourceFile = new File(repoPath, f.getFile());
+        if (!sourceFile.exists() || !sourceFile.isFile()) {
+            return f.getEvidence() != null ? f.getEvidence() : "(无)";
+        }
+
+        int startLine = Math.max(1, f.getStartLine() - CONTEXT_MARGIN);
+        int endLine = f.getEndLine() + CONTEXT_MARGIN;
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(sourceFile), StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            int lineNum = 0;
+            while ((line = reader.readLine()) != null) {
+                lineNum++;
+                if (lineNum < startLine) continue;
+                if (lineNum > endLine) break;
+                sb.append(String.format("%4d | ", lineNum)).append(line).append("\n");
+            }
+            if (sb.length() > 0) {
+                return sb.toString();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to read source for evidence expansion: {}: {}",
+                    sourceFile.getAbsolutePath(), e.getMessage());
+        }
+
+        return f.getEvidence() != null ? f.getEvidence() : "(无)";
     }
 
     // ================================================================
@@ -425,15 +477,15 @@ public class ReviewLlmService {
      */
     private String getReviewProvider() {
         String provider = readConfig("ai.review.provider");
-        return (provider != null && !provider.isEmpty()) ? provider : readConfig("llm.provider");
+        return (provider != null && !provider.isEmpty()) ? provider : "deepseek";
     }
 
     /**
-     * 获取 review LLM 的 model，未配置时回退到主 LLM model。
+     * 获取 review LLM 的 model，未配置时回退到 deepseek-v4-pro。
      */
     private String getReviewModel() {
         String model = readConfig("ai.review.model");
-        return (model != null && !model.isEmpty()) ? model : readConfig("llm.modelName");
+        return (model != null && !model.isEmpty()) ? model : "deepseek-v4-pro";
     }
 
     private String getApiKey() {
