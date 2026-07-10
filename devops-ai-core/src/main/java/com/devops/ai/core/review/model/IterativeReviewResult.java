@@ -1,5 +1,7 @@
 package com.devops.ai.core.review.model;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.List;
 
 /**
@@ -17,7 +19,8 @@ public class IterativeReviewResult {
     /** 本轮确认的 findings */
     private List<Finding> confirmed;
 
-    /** 需要 grep/Read 的请求 */
+    /** 需要 grep/Read 的请求（LLM 输出字段名为 grep_requests） */
+    @JsonProperty("grep_requests")
     private List<GrepRequest> grepRequests;
 
     /** true = 审查完毕 */

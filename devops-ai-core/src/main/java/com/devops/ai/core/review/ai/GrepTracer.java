@@ -227,7 +227,7 @@ public class GrepTracer {
 
     /**
      * 统计一行中有效花括号数量。
-     * 跳过：字符串字面量、字符字面量、单行注释。
+     * 跳过：字符串字面量、字符字面量、单行注释、多行注释。
      */
     private int countBraces(String line) {
         int count = 0;
@@ -236,7 +236,6 @@ public class GrepTracer {
 
         for (int i = 0; i < line.length(); i++) {
             char c = line.charAt(i);
-            char prev = i > 0 ? line.charAt(i - 1) : '\0';
 
             // 单行注释 //（不在字符串/字符内时）
             if (!inString && !inChar && i + 1 < line.length()
@@ -246,7 +245,7 @@ public class GrepTracer {
 
             // 字符串字面量 "..."（不在字符内时）
             if (c == '"' && !inChar) {
-                if (prev != '\\') {
+                if (!isEscaped(line, i)) {
                     inString = !inString;
                 }
                 continue;
@@ -254,7 +253,7 @@ public class GrepTracer {
 
             // 字符字面量 '...'（不在字符串内时）
             if (c == '\'' && !inString) {
-                if (prev != '\\') {
+                if (!isEscaped(line, i)) {
                     inChar = !inChar;
                 }
                 continue;
@@ -267,6 +266,19 @@ public class GrepTracer {
             else if (c == '}') count--;
         }
         return count;
+    }
+
+    /**
+     * 判断位置 i 的字符是否被转义（前面有奇数个连续反斜杠）。
+     * 例如 "\\"" → 第二个 " 未被转义（\\是转义的反斜杠）
+     *      "\"" → 第二个 " 被转义
+     */
+    private boolean isEscaped(String line, int i) {
+        int backslashes = 0;
+        for (int j = i - 1; j >= 0 && line.charAt(j) == '\\'; j--) {
+            backslashes++;
+        }
+        return backslashes % 2 != 0; // 奇数个反斜杠 = 被转义
     }
 
     // ================================================================

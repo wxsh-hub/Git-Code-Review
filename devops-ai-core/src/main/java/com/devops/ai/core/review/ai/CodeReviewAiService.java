@@ -952,6 +952,8 @@ public class CodeReviewAiService {
             for (CompletableFuture<List<Finding>> f : futures) {
                 allFindings.addAll(f.get());
             }
+            // 按 file+line+category 去重（不同模块可能通过 grep 发现同一位置的相同问题）
+            allFindings = deduplicateByFileAndLine(allFindings);
             log.info("Deep scan complete: {} findings from {} files in {} groups",
                     allFindings.size(), diffs.size(), groups.size());
             return allFindings;
@@ -1898,19 +1900,21 @@ public class CodeReviewAiService {
 
     /**
      * 构建迭代审查的 system prompt（固定，不随轮次变化）。
+     * 包含完整的审查清单、输出格式、置信度规则。
      */
     private String buildIterativeSystemPrompt() {
         StringBuilder sb = new StringBuilder();
-        sb.append("你是 Java 代码审查专家。审查模块代码，输出发现的问题和需要查看的外部代码。\n\n");
+        sb.append("你是资深 Java 代码审查专家。请逐文件逐行审查代码，输出发现的问题。\n\n");
 
-        sb.append("输出严格 JSON：\n");
+        // 输出格式
+        sb.append("输出严格 JSON（不要 markdown 代码块标记）：\n");
         sb.append("{\n");
         sb.append("  \"confirmed\": [\n");
         sb.append("    {\n");
         sb.append("      \"file\": \"文件路径\",\n");
         sb.append("      \"severity\": \"HIGH\",\n");
         sb.append("      \"category\": \"NPE\",\n");
-        sb.append("      \"evidence\": \"问题描述（含问题代码片段）\",\n");
+        sb.append("      \"evidence\": \"必须是从源码复制的实际代码，例如: String sql = \\\"SELECT * FROM \\\" + table + \\\" WHERE \\\" + whereSql;\",\n");
         sb.append("      \"suggestedFix\": \"修复建议代码\",\n");
         sb.append("      \"trigger\": \"触发条件\",\n");
         sb.append("      \"startLine\": 45,\n");
@@ -1928,10 +1932,10 @@ public class CodeReviewAiService {
         sb.append("  \"done\": false\n");
         sb.append("}\n\n");
 
-        sb.append("规则：\n");
-        sb.append("- confirmed 只输出你确定的问题，不要猜测。evidence 必须包含从源码复制的实际代码片段\n");
+        // grep 使用规则
+        sb.append("## grep 使用规则\n");
         sb.append("- 如果你发现问题可疑但不确定（例如：不确定某个值是否可被外部控制、不确定某个方法是否有副作用），\n");
-        sb.append("  必须先通过 grep_requests 查看相关代码再下结论，不要在 confirmed 中输出猜测性判断\n");
+        sb.append("  **必须**先通过 grep_requests 查看相关代码再下结论，不要在 confirmed 中输出猜测性判断\n");
         sb.append("- grep_requests 输出你需要查看外部代码才能确认的可疑点\n");
         sb.append("  - symbol：类名.方法名（如 UserRepository.findById），所有重载版本都会返回\n");
         sb.append("  - file：可选，如果知道文件路径填写后会直接读取该文件的方法体（含注解和 JavaDoc）\n");
@@ -1939,17 +1943,90 @@ public class CodeReviewAiService {
         sb.append("  - 每轮最多 ").append(maxGrepPerRound).append(" 个 grep_requests\n");
         sb.append("- done=true 表示审查完毕，不需要更多上下文\n");
         sb.append("- 如果你确定没有问题，confirmed 输出空数组，done=true\n");
-        sb.append("- 重点排查运行时隐患：空指针、并发安全、资源泄漏、异常处理、事务边界、安全漏洞\n");
-        sb.append("- 忽略编译级问题（接口不匹配、字段不存在、类型错误等），这些不在审查范围内\n\n");
+        sb.append("- **每个 finding 只报告一个问题**，不要用 --- 或换行合并多个问题到一个 finding 中\n\n");
 
+        // 全量模式注意事项
+        sb.append("## 全量扫描模式说明\n");
+        sb.append("- 你看到的是模块内文件的完整源码（非 diff），请基于完整代码上下文审查\n");
+        sb.append("- 你可以看到本模块内所有文件，跨文件调用关系可以完整分析\n");
+        sb.append("- 你**看不到其他模块的代码** — 如果 @Autowired 的 bean 定义在其他模块，不要报「bean 不存在」\n");
+        sb.append("- 如果 import 了其他模块的类但看不到其源码，这是正常的，不要报「类不存在」\n");
+        sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n\n");
+
+        // 编译错误跳过规则
+        sb.append("## 编译错误跳过规则（以下类型不要报告）\n");
+        sb.append("代码能成功构建并部署，说明不存在编译错误。以下类型即使看到疑似问题也不要报告：\n");
+        sb.append("1. 引用不存在的类/Bean/方法/字段 — 跨模块引用看不到是正常的\n");
+        sb.append("2. 方法签名不匹配 — 可能有重载，或定义在其他模块\n");
+        sb.append("3. 字段/属性类型不匹配 — 字段定义在其他模块的实体类/DTO 中\n");
+        sb.append("4. 未实现接口/抽象类方法 — 接口定义在其他模块\n");
+        sb.append("5. @Override 签名与父类不一致 — 父类在其他模块\n");
+        sb.append("6. 泛型类型不匹配 — 泛型定义在其他模块\n");
+        sb.append("7. @Value 引用的配置 key 不存在 — 配置可能在其他模块\n");
+        sb.append("8. MyBatis XML 的 resultType/parameterType 指向的类不存在\n\n");
+
+        // 审查清单
+        sb.append("## 审查清单 — 请逐项检查每处代码\n\n");
+        sb.append("⚠️ **分类优先级（当一个问题命中多个分类时，选优先级最高的）**：\n");
+        sb.append("  SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK >\n");
+        sb.append("  ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE >\n");
+        sb.append("  DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n\n");
+
+        sb.append("P0 阻断（必须检查，发现即阻断）：\n");
+        sb.append("□ SECURITY - SQL注入：用户输入拼接到SQL/HQL/JPA原生查询中？MyBatis ${} 而非 #{}？\n");
+        sb.append("□ SECURITY - XSS/权限绕过：用户输入未转义输出？敏感操作缺少 @PreAuthorize 或角色校验？\n");
+        sb.append("□ SECURITY - 反序列化漏洞：ObjectInputStream.readObject() 从不可信来源读取？\n");
+        sb.append("□ SECURITY - SSRF：URL/URI 参数来自用户输入且未校验？\n");
+        sb.append("□ SECURITY - 路径穿越：文件路径拼接了用户输入？\n");
+        sb.append("□ SECRET_EXPOSURE - 敏感信息：**仅限 Java 代码中**硬编码密码/Token/API密钥。注意：配置文件中的密码是正常部署配置，不要报。\n");
+        sb.append("□ TRANSACTION - 事务：写操作是否有 @Transactional？事务传播/回滚策略是否正确？\n\n");
+
+        sb.append("P1 高危（重点检查）：\n");
+        sb.append("□ NPE - 空指针：方法返回值/参数/集合元素使用前是否判空？Optional.get() 有无保护？\n");
+        sb.append("□ CONCURRENCY - 并发/死锁：共享可变变量是否线程安全？synchronized 块是否嵌套？HashMap 是否误用于多线程？\n");
+        sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
+        sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return？\n");
+        sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO？\n");
+        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值是否处理？equals/hashCode 是否成对？BigDecimal 精度？\n\n");
+
+        sb.append("P2 中危（注意检查）：\n");
+        sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？字符串拼接是否用 StringBuilder？\n");
+        sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？\n\n");
+
+        sb.append("P3 低危（顺带指出）：\n");
+        sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径？\n");
+        sb.append("□ CODE_STYLE - 代码风格：命名不规范、GET 请求执行写操作？\n");
+        sb.append("□ DEAD_CODE - 冗余/死代码：未调用的方法/变量？永远不执行的分支？\n\n");
+
+        // 严重度校准
+        sb.append("## 严重度校准（必须遵守）\n");
+        sb.append("- GET 请求执行写操作（如 @GetMapping(\"/delete\")）→ 归类为 CODE_STYLE + P3，**不是** SECURITY/P0。除非有实际的注入或越权风险。\n");
+        sb.append("- 字段有默认值（如 `private Boolean autoRollback = true`）→ 不要报 NPE，反序列化时默认值会生效\n");
+        sb.append("- pom.xml、.properties、.yml 等配置/构建文件中的问题（如 mainClass 错误）→ 不要报，这些是部署配置问题\n");
+        sb.append("- 只有存在**实际可利用的安全漏洞**（SQL注入、XSS、SSRF、反序列化等）时才归类为 SECURITY\n\n");
+
+        // evidence 要求
+        sb.append("## ⚠️ evidence 字段要求（最重要，必须遵守）\n");
+        sb.append("- evidence 必须是源文件中的**实际源码原文**，直接从上面的代码块中复制\n");
+        sb.append("- ✅ 正确示例：`String sql = \"DELETE FROM \" + tableName + \" WHERE \" + whereSql;`\n");
+        sb.append("- ✅ 正确示例：`private String devPassword;`\n");
+        sb.append("- ✅ 多行时可省略中间部分：`public void process() {\\n    ... [省略20行] ...\\n    return result;\\n}`\n");
+        sb.append("- ❌ 错误示例：「字段 devPassword 直接暴露在 VO 中，未脱敏」← 这是描述，不是源码\n");
+        sb.append("- ❌ 错误示例：「定义了三个相同 id 的 select」← 这是概括，不是源码\n");
+        sb.append("- **严禁**用文字描述代替源码，否则该 finding 将被拒绝\n\n");
+
+        // severity/category 说明
         sb.append("severity（严重度）取值：BLOCKER, HIGH, MEDIUM, LOW\n");
         sb.append("category（问题分类）取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, COMPILE_ERROR, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
         sb.append("注意：severity 和 category 是两个独立字段，不要混淆。例如 category 不能填 \"P0 BLOCKER\"，应该填 \"SECURITY\"\n\n");
 
-        sb.append("置信度规则：\n");
-        sb.append("- 有明确代码证据 → 0.85-0.99\n");
-        sb.append("- 有趋势但不确定 → ≤ 0.70，且必须先 grep 确认再输出到 confirmed\n");
-        sb.append("- 纯猜测/假设性判断（含\"若\"\"可能\"\"假设\"\"如果被外部\"等措辞）→ 不要报，先 grep 确认\n");
+        // 置信度规则
+        sb.append("## 置信度规则\n");
+        sb.append("- 确定是缺陷（有明确证据、代码中就能证实的）→ confidence 0.85-0.99\n");
+        sb.append("- 有趋势/特征但不完全确定 → confidence ≤ 0.70，且必须先 grep 确认再输出到 confirmed\n");
+        sb.append("- 纯猜测/假设性判断（含\"若\"\"可能\"\"假设\"\"如果被外部\"等措辞）→ **不要报**，先 grep 确认\n");
+        sb.append("- 如果你在 evidence 中写了「可能」「也许」「不确定」「需要验证」「建议检查」，\n");
+        sb.append("  说明你自己都不确定，此时不要输出到 confirmed，应该用 grep_requests 去确认\n");
 
         return sb.toString();
     }
@@ -2044,6 +2121,69 @@ public class CodeReviewAiService {
     }
 
     /**
+     * 拆分带 --- 分隔符的 finding。
+     * 如果 evidence 或 trigger 包含 ---，说明 LLM 合并了多个问题到一个 finding 中，需要拆开。
+     */
+    private List<Finding> splitMergedFindings(List<Finding> findings) {
+        List<Finding> result = new ArrayList<>();
+        for (Finding f : findings) {
+            String evidence = f.getEvidence();
+            String trigger = f.getTrigger();
+            // 检查是否包含 --- 分隔符
+            if ((evidence != null && evidence.contains("---")) || (trigger != null && trigger.contains("---"))) {
+                String[] evidenceParts = evidence != null ? evidence.split("\\s*---\\s*") : new String[]{evidence};
+                String[] triggerParts = trigger != null ? trigger.split("\\s*---\\s*") : new String[]{trigger};
+                int count = Math.max(evidenceParts.length, triggerParts.length);
+                for (int i = 0; i < count; i++) {
+                    Finding split = new Finding();
+                    split.setFile(f.getFile());
+                    split.setStartLine(f.getStartLine());
+                    split.setEndLine(f.getEndLine());
+                    split.setSeverity(f.getSeverity());
+                    split.setCategory(f.getCategory());
+                    split.setConfidence(f.getConfidence());
+                    split.setModuleName(f.getModuleName());
+                    split.setEvidence(i < evidenceParts.length ? evidenceParts[i].trim() : evidence);
+                    split.setTrigger(i < triggerParts.length ? triggerParts[i].trim() : trigger);
+                    split.setSuggestedFix(f.getSuggestedFix());
+                    result.add(split);
+                }
+                log.debug("Split finding with --- separator into {} parts: {}", count,
+                        f.getFile() + ":" + f.getStartLine());
+            } else {
+                result.add(f);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 按 file + startLine + category 去重。
+     * 迭代 grep 模式下，不同模块的 LLM 可能通过 grep 发现同一位置的相同问题。
+     */
+    List<Finding> deduplicateByFileAndLine(List<Finding> findings) {
+        if (findings == null || findings.isEmpty()) return findings;
+        Map<String, Finding> seen = new LinkedHashMap<>();
+        List<Finding> result = new ArrayList<>();
+        for (Finding f : findings) {
+            String key = (f.getFile() != null ? f.getFile() : "")
+                    + ":" + f.getStartLine()
+                    + ":" + (f.getCategory() != null ? f.getCategory().name() : "");
+            if (!seen.containsKey(key)) {
+                seen.put(key, f);
+                result.add(f);
+            } else {
+                log.debug("Dedup: skipping duplicate finding at {}:{}", f.getFile(), f.getStartLine());
+            }
+        }
+        int removed = findings.size() - result.size();
+        if (removed > 0) {
+            log.info("Dedup by file+line+category: {} → {} (removed {} duplicates)", findings.size(), result.size(), removed);
+        }
+        return result;
+    }
+
+    /**
      * 解析 JSON，返回 null 表示解析失败。
      */
     private IterativeReviewResult parseIterativeResult(String response) {
@@ -2072,6 +2212,10 @@ public class CodeReviewAiService {
             if (result.getConfirmed() == null && result.getGrepRequests() == null) {
                 log.warn("Iterative review: both confirmed and grep_requests are null");
                 return null;
+            }
+            // 后处理：拆分带 --- 的 finding
+            if (result.getConfirmed() != null) {
+                result.setConfirmed(splitMergedFindings(result.getConfirmed()));
             }
             return result;
         } catch (Exception e) {
