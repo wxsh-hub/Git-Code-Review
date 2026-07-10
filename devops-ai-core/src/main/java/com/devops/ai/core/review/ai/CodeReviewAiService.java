@@ -21,12 +21,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
+import com.devops.ai.core.review.model.GrepRequest;
+import com.devops.ai.core.review.model.IterativeReviewResult;
+
 @Component
 public class CodeReviewAiService {
 
     private static final Logger log = LoggerFactory.getLogger(CodeReviewAiService.class);
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+            .configure(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_AS_NULL, true)
             .configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true)
             .configure(JsonParser.Feature.ALLOW_SINGLE_QUOTES, true)
             .configure(JsonParser.Feature.ALLOW_BACKSLASH_ESCAPING_ANY_CHARACTER, true);
@@ -47,6 +51,7 @@ public class CodeReviewAiService {
     private final ReviewLlmService reviewLlmService;
     private final SecretDetector secretDetector;
     private final FindingVerifier findingVerifier;
+    private final GrepTracer grepTracer;
 
     @Value("${ocr.fallback-on-error:true}")
     private boolean ocrFallbackOnError;
@@ -66,11 +71,20 @@ public class CodeReviewAiService {
     @Value("${ocr.deep-scan.max-chunk-chars:30000}")
     private int maxChunkChars;
 
+    @Value("${ocr.deep-scan.max-grep-rounds:10}")
+    private int maxGrepRounds;
+
+    @Value("${ocr.deep-scan.max-grep-per-round:5}")
+    private int maxGrepPerRound;
+
+    private static final int MAX_FORMAT_RETRIES = 2;
+
     public CodeReviewAiService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
                                ConfigEncryptor configEncryptor, OcrmcpClient ocrmcpClient,
                                FindingBlameTracer findingBlameTracer,
                                ReviewLlmService reviewLlmService,
-                               SecretDetector secretDetector, FindingVerifier findingVerifier) {
+                               SecretDetector secretDetector, FindingVerifier findingVerifier,
+                               GrepTracer grepTracer) {
         this.llmClient = llmClient;
         this.aiConfigRepository = aiConfigRepository;
         this.configEncryptor = configEncryptor;
@@ -79,6 +93,7 @@ public class CodeReviewAiService {
         this.reviewLlmService = reviewLlmService;
         this.secretDetector = secretDetector;
         this.findingVerifier = findingVerifier;
+        this.grepTracer = grepTracer;
     }
 
     // ================================================================
@@ -93,7 +108,7 @@ public class CodeReviewAiService {
             }
             return reviewWithOcr(context);
         } catch (Exception e) {
-            log.error("OCR review failed, falling back to legacy: {}", e.getMessage());
+            log.error("OCR review failed, falling back to legacy: {}", e.getMessage(), e);
             if (ocrFallbackOnError) {
                 return reviewLegacy(context);
             }
@@ -210,11 +225,11 @@ public class CodeReviewAiService {
         return filtered;
     }
 
-    /** 判断是否为非代码文件（图片、二进制、文档等） */
+    /** 判断是否为非代码文件（图片、二进制、文档、配置文件等） */
     private boolean isNonCodeFile(String path) {
         String lower = path.toLowerCase();
         // 二进制/图片/文档/字体
-        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+        if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
                 || lower.endsWith(".gif") || lower.endsWith(".ico") || lower.endsWith(".svg")
                 || lower.endsWith(".pdf") || lower.endsWith(".doc") || lower.endsWith(".docx")
                 || lower.endsWith(".xls") || lower.endsWith(".xlsx") || lower.endsWith(".ppt")
@@ -223,7 +238,21 @@ public class CodeReviewAiService {
                 || lower.endsWith(".woff") || lower.endsWith(".woff2") || lower.endsWith(".ttf")
                 || lower.endsWith(".eot") || lower.endsWith(".mp3") || lower.endsWith(".mp4")
                 || lower.endsWith(".avi") || lower.endsWith(".mov")
-                || lower.endsWith(".lock") || lower.endsWith(".sum");
+                || lower.endsWith(".lock") || lower.endsWith(".sum")) {
+            return true;
+        }
+        // 配置文件（明文密码等不属于代码 bug）
+        if (lower.endsWith(".properties") || lower.endsWith(".yml") || lower.endsWith(".yaml")
+                || lower.endsWith(".setting") || lower.endsWith(".conf") || lower.endsWith(".cfg")
+                || lower.endsWith(".env") || lower.endsWith(".ini") || lower.endsWith(".toml")) {
+            return true;
+        }
+        // 部署/运维配置目录下的文件
+        if (lower.contains("/deploy/") || lower.contains("\\deploy\\")
+                || lower.contains("/config/") || lower.contains("\\config\\")) {
+            return true;
+        }
+        return false;
     }
 
     // ================================================================
@@ -232,6 +261,9 @@ public class CodeReviewAiService {
 
     /**
      * 按文件路径提取业务领域名并分组，每组构建审查背景上下文。
+     *
+     * <p>文件数少于 {@code minGroupSize} 的小组会被合并为一个 "small-modules" 组，
+     * 减少 LLM 调用次数。</p>
      */
     Map<String, ReviewGroup> groupByBusinessLink(List<FileDiff> diffs, CodeReviewContext context) {
         Map<String, List<FileDiff>> byModule = new LinkedHashMap<>();
@@ -244,8 +276,27 @@ public class CodeReviewAiService {
         // 全局 background（code-review-graph 架构分析）
         String globalBg = buildGraphBackground(context);
 
-        Map<String, ReviewGroup> groups = new LinkedHashMap<>();
+        // 小组合并：文件数 < minGroupSize 的组合并为 "small-modules"
+        int minGroupSize = 3;
+        List<FileDiff> smallFiles = new ArrayList<>();
+        List<String> smallModuleNames = new ArrayList<>();
+        Map<String, List<FileDiff>> merged = new LinkedHashMap<>();
         for (Map.Entry<String, List<FileDiff>> entry : byModule.entrySet()) {
+            if (entry.getValue().size() < minGroupSize) {
+                smallFiles.addAll(entry.getValue());
+                smallModuleNames.add(entry.getKey());
+            } else {
+                merged.put(entry.getKey(), entry.getValue());
+            }
+        }
+        if (!smallFiles.isEmpty()) {
+            merged.put("small-modules", smallFiles);
+            log.info("Merged {} small modules ({}): {} files into 'small-modules'",
+                    smallModuleNames.size(), smallModuleNames, smallFiles.size());
+        }
+
+        Map<String, ReviewGroup> groups = new LinkedHashMap<>();
+        for (Map.Entry<String, List<FileDiff>> entry : merged.entrySet()) {
             String module = entry.getKey();
             List<FileDiff> files = entry.getValue();
 
@@ -472,7 +523,9 @@ public class CodeReviewAiService {
         sb.append("## 变更文件（模块: ").append(group.name).append("，共 ").append(group.files.size()).append(" 个文件）\n\n");
         for (FileDiff diff : group.files) {
             String changeLabel = diff.getChangeType() != null ? diff.getChangeType() : "MODIFY";
-            sb.append("### ").append(diff.getFilePath()).append(" (").append(changeLabel).append(")\n");
+            int lineCount = countLines(diff.getNewContent());
+            sb.append("### ").append(diff.getFilePath()).append(" (").append(changeLabel)
+                    .append(") — ").append(lineCount).append(" lines\n");
             if (diff.getUnifiedDiff() != null && !diff.getUnifiedDiff().isEmpty()) {
                 // 截断过大的 diff（>8000 字符）避免超出 LLM 上下文
                 String diffContent = diff.getUnifiedDiff();
@@ -885,7 +938,6 @@ public class CodeReviewAiService {
                         log.info("Deep scan module '{}': {} files → calling LLM...",
                                 group.name, group.files.size());
                         List<Finding> findings = reviewDeepScanModuleGroup(group, context);
-                        log.info("Deep scan module '{}': {} findings", group.name, findings.size());
                         return findings;
                     } catch (Exception e) {
                         log.error("Deep scan module '{}' failed: {}", group.name, e.getMessage());
@@ -941,14 +993,11 @@ public class CodeReviewAiService {
 
         List<Finding> findings;
         if (totalChars <= maxChunkChars) {
-            // 方案A：单次调用，质量最好
-            findings = parseFindings(group.name, callLlm(buildDeepScanPrompt(group, context)));
-            for (Finding f : findings) {
-                f.setModuleName(group.name);
-            }
+            // 方案A：迭代式 grep 追踪审查
+            findings = reviewDeepScanModuleIterative(group, context);
         } else {
-            // 方案D：拆块 + 共享摘要 + 并行
-            log.info("Deep scan module '{}': {} chars > {} limit, using parallel chunks with shared summary",
+            // 方案D：拆块 + 共享摘要 + 并行迭代 grep
+            log.info("Deep scan module '{}': {} chars > {} limit, using parallel chunks with iterative grep",
                     group.name, totalChars, maxChunkChars);
             findings = reviewDeepScanWithSummary(group, context);
         }
@@ -959,9 +1008,9 @@ public class CodeReviewAiService {
     }
 
     /**
-     * 方案D：拆块 + 共享摘要 + 并行独立调用。
-     * 每个块的 prompt 包含：本块文件完整源码 + 其他块文件的类/方法签名摘要。
-     * 各块独立并行调用，最后合并 findings。
+     * 方案D：拆块 + 共享摘要 + 并行迭代 grep。
+     * 每个块独立走迭代式 grep 追踪审查，最后合并 findings。
+     * 每个块的背景包含：架构上下文 + 其他块文件的类/方法签名摘要。
      */
     private List<Finding> reviewDeepScanWithSummary(ReviewGroup group, CodeReviewContext context) throws Exception {
         List<List<FileDiff>> chunks = splitFilesIntoChunks(group.files, maxChunkChars);
@@ -983,10 +1032,16 @@ public class CodeReviewAiService {
             final String otherSignatures = signatureCache.get(chunk);
             futures.add(CompletableFuture.supplyAsync(() -> {
                 try {
-                    String prompt = buildDeepScanChunkWithSummary(
-                            group.name, chunk, chunkIdx, chunks.size(), otherSignatures, graphBg, context);
-                    List<Finding> findings = parseFindings(group.name + "#" + chunkIdx, callLlm(prompt));
-                    // 设置模块名（parseFindings 不设置）
+                    // 构建 chunk 级别的背景上下文
+                    String chunkBg = graphBg;
+                    if (otherSignatures != null && !otherSignatures.isEmpty()) {
+                        chunkBg += "\n\n## 本模块其他文件的类与方法概览\n\n" + otherSignatures
+                                + "\n请关注本批代码与上述其他文件的调用关系，重点排查运行时隐患（空指针、并发安全、资源泄漏、异常处理等），忽略编译级问题。\n";
+                    }
+                    // 每个 chunk 独立走迭代 grep
+                    ReviewGroup chunkGroup = new ReviewGroup(
+                            group.name + "#" + chunkIdx, chunk, chunkBg);
+                    List<Finding> findings = reviewDeepScanModuleIterative(chunkGroup, context);
                     for (Finding f : findings) {
                         f.setModuleName(group.name);
                     }
@@ -1101,7 +1156,8 @@ public class CodeReviewAiService {
 
         // 本批文件完整源码
         for (FileDiff diff : chunk) {
-            sb.append("### ").append(diff.getFilePath()).append("\n");
+            int lineCount = countLines(diff.getNewContent());
+            sb.append("### ").append(diff.getFilePath()).append(" (").append(lineCount).append(" lines)\n");
             String content = diff.getNewContent();
             if (content != null && !content.isEmpty()) {
                 if (content.length() > maxSourceChars) {
@@ -1148,7 +1204,8 @@ public class CodeReviewAiService {
         sb.append("## 模块: ").append(group.name).append("（共 ").append(group.files.size()).append(" 个文件）\n\n");
 
         for (FileDiff diff : group.files) {
-            sb.append("### ").append(diff.getFilePath()).append("\n");
+            int lineCount = countLines(diff.getNewContent());
+            sb.append("### ").append(diff.getFilePath()).append(" (").append(lineCount).append(" lines)\n");
             String content = diff.getNewContent();
             if (content != null && !content.isEmpty()) {
                 if (content.length() > maxSourceChars) {
@@ -1709,5 +1766,317 @@ public class CodeReviewAiService {
     private String getProvider() {
         String provider = readConfig("llm.provider");
         return (provider != null && !provider.isEmpty()) ? provider : "deepseek";
+    }
+
+    /** 统计文本行数 */
+    private int countLines(String content) {
+        if (content == null || content.isEmpty()) return 0;
+        int count = 1;
+        for (int i = 0; i < content.length(); i++) {
+            if (content.charAt(i) == '\n') count++;
+        }
+        return count;
+    }
+
+    // ================================================================
+    // 迭代式 Grep 追踪深度扫描
+    // ================================================================
+
+    /**
+     * 迭代式深度扫描：LLM 自主决定 grep 追踪，逐轮确认 findings。
+     *
+     * <p>流程：
+     * <ol>
+     *   <li>Round 1: 模块源码 → LLM → { confirmed, grep_requests, done }</li>
+     *   <li>Round 2+: 批量 grep 结果 → LLM → { confirmed, grep_requests, done }</li>
+     *   <li>每轮 confirmed findings 立即存入结果列表（本地缓存）</li>
+     *   <li>下一轮只发 grep 结果，LLM 从对话历史看到之前已确认的</li>
+     *   <li>循环直到 done=true 或达到 maxGrepRounds</li>
+     * </ol>
+     */
+    private List<Finding> reviewDeepScanModuleIterative(ReviewGroup group,
+                                                         CodeReviewContext context) throws Exception {
+        String repoPath = context.getRepoPath();
+        List<Finding> allConfirmed = new ArrayList<>();
+
+        // 构建 system prompt（固定）
+        String systemPrompt = buildIterativeSystemPrompt();
+        // 构建第一轮 user message（模块源码）
+        String userMessage = buildIterativeFirstRoundMessage(group, context);
+
+        // 多轮对话消息列表
+        List<Map<String, Object>> messages = new ArrayList<>();
+        Map<String, Object> systemMsg = new HashMap<>();
+        systemMsg.put("role", "system");
+        systemMsg.put("content", systemPrompt);
+        messages.add(systemMsg);
+
+        String provider = getProvider();
+        String apiKey = getApiKey();
+        String apiUrl = getApiUrl();
+        String model = getModel();
+
+        for (int round = 1; round <= maxGrepRounds; round++) {
+            log.info("Module '{}' iterative round {}: {} confirmed so far",
+                    group.name, round, allConfirmed.size());
+
+            // 添加 user message
+            Map<String, Object> userMsg = new HashMap<>();
+            userMsg.put("role", "user");
+            userMsg.put("content", userMessage);
+            messages.add(userMsg);
+
+            // 估算对话总字符数
+            int totalChars = 0;
+            for (Map<String, Object> msg : messages) {
+                Object content = msg.get("content");
+                if (content != null) totalChars += content.toString().length();
+            }
+            log.info("Module '{}' round {}: calling LLM ({} messages, ~{} chars)",
+                    group.name, round, messages.size(), totalChars);
+
+            // 调 LLM（多轮对话）
+            String response = llmClient.callMultiTurn(provider, apiKey, apiUrl, model,
+                    messages, 8192, 0.1, "json_object");
+
+            log.info("Module '{}' round {}: LLM responded {} chars", group.name, round,
+                    response != null ? response.length() : 0);
+
+            // 添加 assistant message 到对话历史
+            Map<String, Object> assistantMsg = new HashMap<>();
+            assistantMsg.put("role", "assistant");
+            assistantMsg.put("content", response);
+            messages.add(assistantMsg);
+
+            // 解析结果（格式错误时自动重试）
+            IterativeReviewResult result = parseWithRetry(messages, provider, apiKey, apiUrl, model, response);
+            if (result == null) break;
+
+            // 存储本轮确认的 findings
+            if (result.getConfirmed() != null && !result.getConfirmed().isEmpty()) {
+                for (Finding f : result.getConfirmed()) {
+                    f.setModuleName(group.name);
+                }
+                allConfirmed.addAll(result.getConfirmed());
+                log.info("Module '{}' round {}: {} findings confirmed",
+                        group.name, round, result.getConfirmed().size());
+            }
+
+            // done=true 或没有 grep 请求 → 结束
+            if (result.isDone() || result.getGrepRequests() == null || result.getGrepRequests().isEmpty()) {
+                log.info("Module '{}': done after {} rounds, {} total findings",
+                        group.name, round, allConfirmed.size());
+                break;
+            }
+
+            // 超过轮次限制 → 日志告警，丢弃
+            if (round >= maxGrepRounds) {
+                log.warn("Module '{}': reached max {} rounds, discarding {} remaining grep requests: {}",
+                        group.name, maxGrepRounds, result.getGrepRequests().size(),
+                        result.getGrepRequests().stream().map(GrepRequest::getSymbol).collect(Collectors.joining(", ")));
+                break;
+            }
+
+            // 限制本轮 grep 数量
+            List<GrepRequest> requests = result.getGrepRequests();
+            if (requests.size() > maxGrepPerRound) {
+                log.warn("Module '{}': {} grep requests exceeds limit {}, truncating",
+                        group.name, requests.size(), maxGrepPerRound);
+                requests = requests.subList(0, maxGrepPerRound);
+            }
+
+            // 执行 grep，构建下一轮 user message
+            String grepResults = grepTracer.executeRequests(repoPath, requests);
+            int remaining = maxGrepRounds - round - 1;
+            userMessage = buildGrepRoundMessage(grepResults, remaining);
+        }
+
+        log.info("Module '{}': iterative scan complete, {} total findings",
+                group.name, allConfirmed.size());
+        return allConfirmed;
+    }
+
+    /**
+     * 构建迭代审查的 system prompt（固定，不随轮次变化）。
+     */
+    private String buildIterativeSystemPrompt() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("你是 Java 代码审查专家。审查模块代码，输出发现的问题和需要查看的外部代码。\n\n");
+
+        sb.append("输出严格 JSON：\n");
+        sb.append("{\n");
+        sb.append("  \"confirmed\": [\n");
+        sb.append("    {\n");
+        sb.append("      \"file\": \"文件路径\",\n");
+        sb.append("      \"severity\": \"HIGH\",\n");
+        sb.append("      \"category\": \"NPE\",\n");
+        sb.append("      \"evidence\": \"问题描述（含问题代码片段）\",\n");
+        sb.append("      \"suggestedFix\": \"修复建议代码\",\n");
+        sb.append("      \"trigger\": \"触发条件\",\n");
+        sb.append("      \"startLine\": 45,\n");
+        sb.append("      \"endLine\": 45,\n");
+        sb.append("      \"confidence\": 0.90\n");
+        sb.append("    }\n");
+        sb.append("  ],\n");
+        sb.append("  \"grep_requests\": [\n");
+        sb.append("    {\n");
+        sb.append("      \"symbol\": \"类名.方法名\",\n");
+        sb.append("      \"file\": \"文件路径（可选，有则直接读取该文件的方法体）\",\n");
+        sb.append("      \"reason\": \"为什么要看这段代码\"\n");
+        sb.append("    }\n");
+        sb.append("  ],\n");
+        sb.append("  \"done\": false\n");
+        sb.append("}\n\n");
+
+        sb.append("规则：\n");
+        sb.append("- confirmed 只输出你确定的问题，不要猜测。evidence 必须包含从源码复制的实际代码片段\n");
+        sb.append("- 如果你发现问题可疑但不确定（例如：不确定某个值是否可被外部控制、不确定某个方法是否有副作用），\n");
+        sb.append("  必须先通过 grep_requests 查看相关代码再下结论，不要在 confirmed 中输出猜测性判断\n");
+        sb.append("- grep_requests 输出你需要查看外部代码才能确认的可疑点\n");
+        sb.append("  - symbol：类名.方法名（如 UserRepository.findById），所有重载版本都会返回\n");
+        sb.append("  - file：可选，如果知道文件路径填写后会直接读取该文件的方法体（含注解和 JavaDoc）\n");
+        sb.append("  - 无 file 时会全局 grep 搜索该符号\n");
+        sb.append("  - 每轮最多 ").append(maxGrepPerRound).append(" 个 grep_requests\n");
+        sb.append("- done=true 表示审查完毕，不需要更多上下文\n");
+        sb.append("- 如果你确定没有问题，confirmed 输出空数组，done=true\n");
+        sb.append("- 重点排查运行时隐患：空指针、并发安全、资源泄漏、异常处理、事务边界、安全漏洞\n");
+        sb.append("- 忽略编译级问题（接口不匹配、字段不存在、类型错误等），这些不在审查范围内\n\n");
+
+        sb.append("severity（严重度）取值：BLOCKER, HIGH, MEDIUM, LOW\n");
+        sb.append("category（问题分类）取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, COMPILE_ERROR, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
+        sb.append("注意：severity 和 category 是两个独立字段，不要混淆。例如 category 不能填 \"P0 BLOCKER\"，应该填 \"SECURITY\"\n\n");
+
+        sb.append("置信度规则：\n");
+        sb.append("- 有明确代码证据 → 0.85-0.99\n");
+        sb.append("- 有趋势但不确定 → ≤ 0.70，且必须先 grep 确认再输出到 confirmed\n");
+        sb.append("- 纯猜测/假设性判断（含\"若\"\"可能\"\"假设\"\"如果被外部\"等措辞）→ 不要报，先 grep 确认\n");
+
+        return sb.toString();
+    }
+
+    /**
+     * 构建第一轮 user message（模块源码）。
+     */
+    private String buildIterativeFirstRoundMessage(ReviewGroup group, CodeReviewContext context) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## 项目信息\n");
+        sb.append("- 项目：").append(context.getProjectName() != null ? context.getProjectName() : "unknown").append("\n");
+        sb.append("- 分支：").append(context.getBranch() != null ? context.getBranch() : "unknown").append("\n\n");
+        sb.append("## 模块: ").append(group.name).append("（共 ").append(group.files.size()).append(" 个文件）\n\n");
+
+        for (FileDiff diff : group.files) {
+            sb.append("### ").append(diff.getFilePath()).append("\n");
+            String content = diff.getNewContent();
+            if (content != null && !content.isEmpty()) {
+                if (content.length() > maxSourceChars) {
+                    content = content.substring(0, maxSourceChars)
+                            + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
+                }
+                sb.append("```java\n").append(content).append("\n```\n\n");
+            }
+        }
+
+        // 架构上下文
+        if (group.background != null && !group.background.isEmpty()) {
+            sb.append("## 架构上下文\n").append(group.background).append("\n\n");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * 构建后续轮次 user message（grep 结果）。
+     */
+    private String buildGrepRoundMessage(String grepResults, int remainingRounds) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("以下是搜索结果（剩余 ").append(remainingRounds).append(" 轮）：\n\n");
+        sb.append(grepResults).append("\n");
+        sb.append("请根据以上信息：\n");
+        sb.append("1. 确认或修正之前的判断，输出到 confirmed\n");
+        sb.append("2. 如需更多上下文，输出 grep_requests（每轮最多 ").append(maxGrepPerRound).append(" 个）\n");
+        sb.append("3. 全部确认完毕，设 done=true\n");
+        return sb.toString();
+    }
+
+    /**
+     * 解析 LLM 输出，失败时重试（发纠正消息）。
+     */
+    private IterativeReviewResult parseWithRetry(List<Map<String, Object>> messages,
+                                                  String provider, String apiKey,
+                                                  String apiUrl, String model,
+                                                  String response) {
+        // 第一次尝试解析
+        IterativeReviewResult result = parseIterativeResult(response);
+        if (result != null) return result;
+
+        // 格式错误，重试最多 MAX_FORMAT_RETRIES 次
+        for (int retry = 1; retry <= MAX_FORMAT_RETRIES; retry++) {
+            log.warn("LLM output format error, retry {}/{}", retry, MAX_FORMAT_RETRIES);
+
+            Map<String, Object> correctionMsg = new HashMap<>();
+            correctionMsg.put("role", "user");
+            correctionMsg.put("content", "你的输出解析失败，请检查以下问题并重新输出：\n" +
+                    "1. category 必须是以下之一：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, COMPILE_ERROR, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n" +
+                    "   注意：不要用 \"P0 BLOCKER\" 这种严重度作为 category，severity 和 category 是两个不同字段\n" +
+                    "2. severity 可选值：BLOCKER, HIGH, MEDIUM, LOW\n" +
+                    "3. 只输出 JSON，不要包含其他文字");
+            messages.add(correctionMsg);
+
+            String retryResponse = llmClient.callMultiTurn(provider, apiKey, apiUrl, model,
+                    messages, 8192, 0.1, "json_object");
+
+            Map<String, Object> retryAssistantMsg = new HashMap<>();
+            retryAssistantMsg.put("role", "assistant");
+            retryAssistantMsg.put("content", retryResponse);
+            messages.add(retryAssistantMsg);
+
+            IterativeReviewResult retryResult = parseIterativeResult(retryResponse);
+            if (retryResult != null) return retryResult;
+        }
+
+        // 重试都失败，视为结束
+        log.error("LLM output format error after {} retries, ending iterative review", MAX_FORMAT_RETRIES);
+        IterativeReviewResult empty = new IterativeReviewResult();
+        empty.setConfirmed(Collections.emptyList());
+        empty.setGrepRequests(Collections.emptyList());
+        empty.setDone(true);
+        return empty;
+    }
+
+    /**
+     * 解析 JSON，返回 null 表示解析失败。
+     */
+    private IterativeReviewResult parseIterativeResult(String response) {
+        String json = extractJson(response);
+        if (json.isEmpty()) {
+            log.warn("Iterative review: no valid JSON, raw={}",
+                    response.length() > 200 ? response.substring(0, 200) + "..." : response);
+            return null;
+        }
+        try {
+            IterativeReviewResult result = MAPPER.readValue(json, IterativeReviewResult.class);
+            // 兜底：category 为 null 时（LLM 输出了未知枚举值），映射为 OTHER
+            if (result.getConfirmed() != null) {
+                for (Finding f : result.getConfirmed()) {
+                    if (f.getCategory() == null) {
+                        log.warn("Iterative review: unknown category for finding '{}', mapping to OTHER",
+                                f.getEvidence() != null ? f.getEvidence().substring(0, Math.min(50, f.getEvidence().length())) : "?");
+                        f.setCategory(FindingCategory.OTHER);
+                    }
+                    // severity 也可能为 null，兜底
+                    if (f.getSeverity() == null) {
+                        f.setSeverity(FindingSeverity.MEDIUM);
+                    }
+                }
+            }
+            if (result.getConfirmed() == null && result.getGrepRequests() == null) {
+                log.warn("Iterative review: both confirmed and grep_requests are null");
+                return null;
+            }
+            return result;
+        } catch (Exception e) {
+            log.warn("Iterative review: parse failed: {}", e.getMessage());
+            return null;
+        }
     }
 }
