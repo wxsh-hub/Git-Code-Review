@@ -149,17 +149,24 @@ public class GrepTracer {
             return null;
         }
 
+        // B1 修复: 符号解析成功即视为有效结果（即使无调用者/被调用者）
         StringBuilder sb = new StringBuilder();
-        boolean hasResult = false;
+        boolean hasCallers = false;
+        boolean hasCallees = false;
 
         // 1. callers_of：谁调用了这个方法
         try {
             CrgModels.CrgQueryResult callers = crgClient.queryGraph("callers_of", resolvedTarget);
             if (callers != null && callers.hasResults()) {
-                hasResult = true;
+                hasCallers = true;
                 sb.append("### 调用者\n");
                 int count = 0;
+                int maxCallers = 5;  // 限制返回数，避免上下文字段过长
                 for (CrgModels.CrgNode node : callers.getResults()) {
+                    if (count >= maxCallers) {
+                        sb.append("- ... 等共 ").append(callers.getResults().size()).append(" 个调用者\n");
+                        break;
+                    }
                     String name = node.getName() != null ? node.getName()
                             : (node.getQualifiedName() != null ? node.getQualifiedName() : "?");
                     String file = node.getFile() != null ? node.getFile() : "?";
@@ -173,19 +180,27 @@ public class GrepTracer {
                     count++;
                 }
                 log.debug("[GrepTracer CRG] '{}': {} callers", symbol, count);
+            } else {
+                sb.append("### 调用者: (无)\n");
             }
         } catch (Exception e) {
             log.warn("[GrepTracer CRG] callers_of '{}' failed: {}", resolvedTarget, e.getMessage());
+            sb.append("### 调用者: (查询失败)\n");
         }
 
         // 2. callees_of：这个方法调用了谁
         try {
             CrgModels.CrgQueryResult callees = crgClient.queryGraph("callees_of", resolvedTarget);
             if (callees != null && callees.hasResults()) {
-                hasResult = true;
+                hasCallees = true;
                 sb.append("\n### 被调用者\n");
                 int count = 0;
+                int maxCallees = 5;
                 for (CrgModels.CrgNode node : callees.getResults()) {
+                    if (count >= maxCallees) {
+                        sb.append("- ... 等共 ").append(callees.getResults().size()).append(" 个被调用者\n");
+                        break;
+                    }
                     String name = node.getName() != null ? node.getName()
                             : (node.getQualifiedName() != null ? node.getQualifiedName() : "?");
                     String file = node.getFile() != null ? node.getFile() : "?";
@@ -199,25 +214,29 @@ public class GrepTracer {
                     count++;
                 }
                 log.debug("[GrepTracer CRG] '{}': {} callees", symbol, count);
+            } else {
+                sb.append("\n### 被调用者: (无)\n");
             }
         } catch (Exception e) {
             log.warn("[GrepTracer CRG] callees_of '{}' failed: {}", resolvedTarget, e.getMessage());
+            sb.append("\n### 被调用者: (查询失败)\n");
         }
 
-        // 3. 读取方法体（复用现有 readFile 逻辑）
-        // 从 CRG 查询结果中获取调用者的方法体
-        if (hasResult && filePath != null && !filePath.isEmpty()) {
+        // 3. 读取方法体（仅在有 filePath 时）
+        if (filePath != null && !filePath.isEmpty()) {
             try {
                 String body = readFile(repoPath, filePath, symbol);
                 if (body != null && !body.startsWith("(")) {
                     sb.append("\n### 方法体\n```java\n").append(body).append("\n```\n");
                 }
             } catch (Exception e) {
-                log.debug("[GrepTracer CRG] readFile fallback for '{}' failed: {}", symbol, e.getMessage());
+                log.debug("[GrepTracer CRG] readFile for '{}' failed: {}", symbol, e.getMessage());
             }
         }
 
-        return hasResult ? sb.toString() : null;
+        log.debug("[GrepTracer CRG] '{}': resolved, callers={}, callees={}, body={}",
+                symbol, hasCallers, hasCallees, filePath != null);
+        return sb.toString();
     }
 
     /**
