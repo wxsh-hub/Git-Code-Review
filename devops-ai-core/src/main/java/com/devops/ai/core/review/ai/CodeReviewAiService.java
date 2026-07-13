@@ -1514,20 +1514,30 @@ public class CodeReviewAiService {
         return sb.toString();
     }
 
-    /** 追加审查清单（压缩统一版，diff/全量/迭代三种模式共用核心内容） */
+    /** 追加审查清单（diff/全量共用结构，模式特定部分通过 isFullScan 区分） */
     private void appendReviewChecklist(StringBuilder sb, boolean isFullScan) {
         // ===== S1: 最高优先级 — 不要报告什么 =====
         sb.append("## 审查要求\n\n");
-        sb.append("### ⛔ 不要报告的情况（最高优先级）\n\n");
+        sb.append("### ⛔ 不要报告的情况（最高优先级，优先于下方审查清单）\n\n");
+
         if (isFullScan) {
-            sb.append("**全量模式**：你能看到本模块全部文件，但跨模块引用看不到——不要报「类/Bean/方法不存在」。\n");
+            // 全量扫描模式
+            sb.append("**全量模式上下文**：你能看到本模块全部文件的完整源码，可做跨文件调用分析。");
+            sb.append("但你**看不到其他模块的代码**——@Autowired 的 bean、import 的类在其他模块定义是正常的，不要报不存在。\n\n");
         } else {
-            sb.append("**Diff 模式**：你只能看到变更文件——未变更代码不可见，不要报「类/Bean/方法/字段不存在」。\n");
+            // Diff 增量模式
+            sb.append("**Diff 模式上下文**：你**只能看到变更文件**，未变更的代码对你不可见。\n");
+            sb.append("- 看到 @Autowired 的 bean 在 diff 中找不到定义 → 不代表不存在，不要报\n");
+            sb.append("- 看到 import 了某个类但在 diff 中看不到 → 正常，不要报\n");
+            sb.append("- 看到 @Async(\"xxx\") 但 diff 中没有 Executor bean → 大概率在其他文件定义了，不要报\n");
+            sb.append("- **版本号变了不代表有问题**——只有看到新版本 API 确实与调用代码不兼容时才能报\n\n");
         }
-        sb.append("**编译/语法**：代码能构建部署说明无编译错误，不要报类型不匹配/签名不对/缺引号/POM配置等问题。\n");
-        sb.append("**不确定不要报**：心想「可能」「也许」「建议检查」→ 直接跳过。只有代码中能确证的问题才报。\n");
-        sb.append("**自我否认**：如果写了「不会抛异常」「实际不会有问题」→ 立刻删除此 finding。\n");
-        sb.append("**不会产生 bug 的不规范写法** → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度。\n\n");
+
+        sb.append("**通用规则**（两种模式都适用）：\n");
+        sb.append("- 代码能构建部署说明无编译错误 → 不要报类型不匹配/签名不对/缺引号/注解误用等\n");
+        sb.append("- 心想「可能」「也许」「建议检查」→ 直接跳过，只有代码中能确证的问题才报\n");
+        sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除此 finding\n");
+        sb.append("- 不会产生 bug 的不规范写法 → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR\n\n");
 
         // ===== S2: 分类优先级 =====
         sb.append("### 分类优先级\n");
@@ -1567,11 +1577,14 @@ public class CodeReviewAiService {
         // ===== S5: evidence =====
         sb.append("### evidence 要求\n");
         sb.append("- 从源码**复制原文**，禁止用文字描述代替\n");
-        sb.append("- 正确：`String sql = \"DELETE FROM \" + table;`　错误：「拼接了用户输入的表名」\n\n");
+        sb.append("- 正确：`String sql = \"DELETE FROM \" + table;`　错误：「拼接了用户输入的表名」\n");
+        sb.append(isFullScan
+                ? "- 从上面的 ```java 代码块中复制，不要自己编造\n\n"
+                : "- 从上面的 ```diff 代码块中复制，不要自己编造\n\n");
 
         // ===== S6: 置信度 =====
         sb.append("### 置信度\n");
-        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70（且必须先 grep 确认，见上方不要报告规则）\n\n");
+        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70 或直接跳过\n\n");
 
         // ===== S7: 输出格式 + 要求 =====
         sb.append("### 输出格式\n");
