@@ -15,6 +15,8 @@ import javax.annotation.PostConstruct;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -67,6 +69,10 @@ public class CrgClient {
     private RestTemplate buildRestTemplate;  // 构建/后处理（长超时）
     private volatile boolean available;
 
+    /** FastMCP streamable-http session 管理 */
+    private volatile String sessionId;
+    private volatile long sessionExpiry;
+
     public CrgClient(CrgConfig config) {
         this.config = config;
     }
@@ -83,6 +89,7 @@ public class CrgClient {
         buildFactory.setReadTimeout(config.getBuildReadTimeout());
         this.buildRestTemplate = new RestTemplate(buildFactory);
 
+        ensureSession();
         this.available = checkAvailability();
         log.info("CRG client initialized: enabled={}, url={}, available={}, "
                 + "queryTimeout={}s, buildTimeout={}s",
@@ -678,14 +685,41 @@ public class CrgClient {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("Accept", "application/json, text/event-stream");
+            if (sessionId != null) {
+                headers.set("Mcp-Session-Id", sessionId);
+            }
             HttpEntity<String> entity = new HttpEntity<>(reqJson, headers);
 
             ResponseEntity<String> response = rt.postForEntity(
                     config.getUrl() + "/mcp", entity, String.class);
 
             if (!response.getStatusCode().is2xxSuccessful()) {
-                log.warn("CRG MCP HTTP {}: {}", response.getStatusCode(), response.getBody());
-                return null;
+                // FastMCP session 过期 → 刷新后重试一次
+                if (response.getStatusCode() == HttpStatus.BAD_REQUEST && sessionId != null) {
+                    String body = response.getBody();
+                    if (body != null && body.contains("Missing session ID")) {
+                        log.info("CRG session expired, refreshing...");
+                        sessionId = null;
+                        ensureSession();
+                        // 带新 session retry
+                        headers.set("Mcp-Session-Id", sessionId);
+                        entity = new HttpEntity<>(reqJson, headers);
+                        response = rt.postForEntity(config.getUrl() + "/mcp", entity, String.class);
+                        if (response.getStatusCode().is2xxSuccessful()) {
+                            // fall through to parse
+                        } else {
+                            log.warn("CRG MCP HTTP {}: {}", response.getStatusCode(), response.getBody());
+                            return null;
+                        }
+                    } else {
+                        log.warn("CRG MCP HTTP {}: {}", response.getStatusCode(), body);
+                        return null;
+                    }
+                } else {
+                    log.warn("CRG MCP HTTP {}: {}", response.getStatusCode(), response.getBody());
+                    return null;
+                }
             }
 
             String respBody = response.getBody();
@@ -696,8 +730,11 @@ public class CrgClient {
 
             log.debug("CRG MCP <- {}", truncate(respBody));
 
+            // FastMCP 3.4 streamable-http 返回 SSE 格式（data: {...}），提取 JSON
+            String jsonBody = extractJsonFromSse(respBody);
+
             // 解析 JSON-RPC response
-            McpResponse mcpResp = MAPPER.readValue(respBody, McpResponse.class);
+            McpResponse mcpResp = MAPPER.readValue(jsonBody, McpResponse.class);
             if (mcpResp.isError()) {
                 log.warn("CRG MCP error ({}): {}",
                         mcpResp.getError().getCode(), mcpResp.getError().getMessage());
@@ -834,13 +871,69 @@ public class CrgClient {
     // 内部：可用性检查
     // ================================================================
 
+    /**
+     * FastMCP 3.4 streamable-http transport 需要先建立 session。
+     * GET /mcp 获取 Mcp-Session-Id，随后的 POST 请求都需要带上。
+     */
+    private synchronized void ensureSession() {
+        if (sessionId != null && System.currentTimeMillis() < sessionExpiry) {
+            return;
+        }
+        try {
+            URL url = new URL(config.getUrl() + "/mcp");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "text/event-stream");
+            conn.setConnectTimeout(config.getConnectTimeout());
+            conn.setReadTimeout(5000);
+            conn.connect();
+
+            String sid = conn.getHeaderField("Mcp-Session-Id");
+            if (sid != null && !sid.isEmpty()) {
+                sessionId = sid;
+                sessionExpiry = System.currentTimeMillis() + 3_600_000; // 1 小时
+                log.info("CRG session established: {}", sid);
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            log.warn("CRG session init failed: {}", e.getMessage());
+        }
+    }
+
     private boolean checkAvailability() {
         if (!config.isEnabled()) return false;
         try {
-            // 简单的连通性检查：调 graph_stats
-            Map<String, Object> args = new LinkedHashMap<>();
-            String resp = callTool(TOOL_GRAPH_STATS, args, restTemplate);
-            return resp != null && !resp.isEmpty();
+            // MCP initialize 握手，不需要 repo 上下文
+            ObjectNode request = MAPPER.createObjectNode();
+            request.put("jsonrpc", "2.0");
+            request.put("id", REQUEST_ID.getAndIncrement());
+            request.put("method", "initialize");
+            ObjectNode params = MAPPER.createObjectNode();
+            params.put("protocolVersion", "2024-11-05");
+            ObjectNode capabilities = MAPPER.createObjectNode();
+            capabilities.put("roots", MAPPER.createObjectNode().put("listChanged", true));
+            params.set("capabilities", capabilities);
+            ObjectNode clientInfo = MAPPER.createObjectNode();
+            clientInfo.put("name", "devops-ai");
+            clientInfo.put("version", "1.0.0");
+            params.set("clientInfo", clientInfo);
+            request.set("params", params);
+
+            String reqJson = MAPPER.writeValueAsString(request);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("Accept", "application/json, text/event-stream");
+            if (sessionId != null) headers.set("Mcp-Session-Id", sessionId);
+            HttpEntity<String> entity = new HttpEntity<>(reqJson, headers);
+
+            ResponseEntity<String> response = restTemplate.postForEntity(
+                    config.getUrl() + "/mcp", entity, String.class);
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                String jsonBody = extractJsonFromSse(response.getBody());
+                JsonNode resp = MAPPER.readTree(jsonBody);
+                return resp.has("result") && !resp.has("error");
+            }
+            return false;
         } catch (Exception e) {
             log.info("CRG service not available at {}: {}", config.getUrl(), e.getMessage());
             return false;
@@ -854,6 +947,22 @@ public class CrgClient {
     // ================================================================
     // 内部：JSON 解析辅助
     // ================================================================
+
+    /**
+     * FastMCP 3.4 streamable-http 响应是 SSE 格式（data: {...JSON...}），
+     * 从 SSE 行中提取纯 JSON 字符串用于 Jackson 解析。
+     */
+    private String extractJsonFromSse(String body) {
+        if (body == null) return null;
+        // 优先找 "data: " 开头的行
+        for (String line : body.split("\\r?\\n")) {
+            if (line.startsWith("data: ")) {
+                return line.substring(6);
+            }
+        }
+        // 已经是纯 JSON（非 SSE 响应）
+        return body;
+    }
 
     @SuppressWarnings("unchecked")
     private List<CrgFanInMethod> parseFanInMethods(JsonNode json) {
@@ -869,13 +978,15 @@ public class CrgClient {
                 for (Map<String, Object> node : hubNodes) {
                     CrgFanInMethod m = new CrgFanInMethod();
                     Object name = node.get("name");
-                    Object degree = node.get("degree");
-                    Object file = node.get("file_path");
-                    Object line = node.get("line_start");
+                    // W5: CRG 服务端返回 "total_degree" 和 "file"，不是 "degree" 和 "file_path"
+                    Object degree = node.get("total_degree");
+                    if (degree == null) degree = node.get("degree"); // 兼容旧版
+                    Object file = node.get("file");
+                    if (file == null) file = node.get("file_path"); // 兼容旧版
                     m.setName(name != null ? name.toString() : "?");
                     m.setCallers(degree instanceof Number ? ((Number) degree).intValue() : 0);
                     m.setFile(file != null ? file.toString() : null);
-                    m.setLine(line instanceof Number ? ((Number) line).intValue() : null);
+                    // CRG hub_node 不返回行号，无需设置 line
                     result.add(m);
                 }
             }

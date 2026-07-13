@@ -515,14 +515,16 @@ public class ReviewLlmService {
                         ? symbol.substring(symbol.lastIndexOf('.') + 1)
                         : symbol;
                 java.util.List<com.devops.ai.core.crg.CrgModels.CrgNode> candidates =
-                        crgClient.searchNodes(methodName, "Function", 5);
+                        crgClient.searchNodes(methodName, "Function", 10);
                 if (candidates != null && !candidates.isEmpty()) {
                     if (symbol.contains(".")) {
                         String className = symbol.substring(0, symbol.lastIndexOf('.'));
+                        String needle = className + "." + methodName;
+                        // W5: endsWith 精确匹配，避免包名前缀导致 contains 失败
                         for (com.devops.ai.core.crg.CrgModels.CrgNode node : candidates) {
-                            if (node.getQualifiedName() != null
-                                    && node.getQualifiedName().contains(className + "." + methodName)) {
-                                resolved = node.getQualifiedName();
+                            String qn = node.getQualifiedName();
+                            if (qn != null && qn.endsWith(needle)) {
+                                resolved = qn;
                                 break;
                             }
                         }
