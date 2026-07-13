@@ -564,99 +564,7 @@ public class CodeReviewAiService {
             sb.append(crossRefs);
         }
 
-        sb.append("## 审查要求\n\n");
-        sb.append("⚠️ **Diff 模式禁区（严禁报告的误判类型）**：\n");
-        sb.append("- **严禁报告「类/Bean/方法/字段不存在」** — 你只能看到变更文件，未变更的代码对你不可见。\n");
-        sb.append("  看到 @Autowired 的 bean 在 diff 中找不到定义 → 不代表不存在，不要报。\n");
-        sb.append("  看到 import 了某个类但在 diff 中看不到 → 正常，不要报。\n");
-        sb.append("  看到 @Async(\"xxx\") 但 diff 中没有 Executor bean → 大概率在其他文件定义了，不要报。\n");
-        sb.append("- **严禁报告「依赖版本升级的风险」除非你能从 diff 中确认真的不兼容** — \n");
-        sb.append("  版本号变了不代表有问题。只有当你看到新版本 API 确实与调用代码不兼容时才能报。\n");
-        sb.append("  如果只是版本号变了但不确定影响，不要报 —— 你的 confidence 应该 < 0.5。\n\n");
-        sb.append("⚠️ **编译错误跳过规则（以下类型不要报告）**：\n");
-        sb.append("代码能成功构建并部署，说明不存在编译错误。以下类型即使在 diff 中看到疑似问题也不要报告：\n");
-        sb.append("1. **引用不存在的类/Bean/方法/字段** — 跨模块引用在 diff 中看不到是正常的，编译器会检查\n");
-        sb.append("2. **方法签名不匹配（参数类型/数量）** — 可能有重载，或定义在其他模块\n");
-        sb.append("3. **字段/属性类型不匹配** — 字段定义在其他模块的实体类/DTO 中\n");
-        sb.append("4. **未实现接口/抽象类方法** — 接口定义在其他模块\n");
-        sb.append("5. **@Override 签名与父类不一致** — 父类在其他模块\n");
-        sb.append("6. **泛型类型不匹配** — 泛型定义在其他模块\n");
-        sb.append("7. **@Value 引用的配置 key 不存在** — 配置可能在其他模块的 yml/properties 中\n");
-        sb.append("8. **MyBatis XML 的 resultType/parameterType 指向的类不存在** — 实体类在其他模块\n");
-        sb.append("9. **@MapperScan/@ComponentScan 扫描路径不存在** — 扫描目标在其他模块\n");
-        sb.append("10. **语法错误（缺引号、缺分号、缺括号）** — IDE 实时检查，不会提交到代码库\n\n");
-        sb.append("**置信度校准规则**：\n");
-        sb.append("- 确定是缺陷（有明确证据、diff 中就能证实的）→ confidence 0.85-0.99\n");
-        sb.append("- 有趋势/特征但不完全确定（如代码模式像 bug，但缺少上下文证实）→ confidence ≤ 0.70\n");
-        sb.append("- 纯猜测/不确定/「可能有风险」/「建议检查是否有」→ **不要报**，这不是代码审查要做的事\n");
-        sb.append("- 如果你在 content 中写了「可能」「也许」「不确定」「需要验证」「建议检查是否有」，\n");
-        sb.append("  说明你自己都不确定，此时 confidence 必须 ≤ 0.70\n\n");
-        sb.append("请逐文件逐行审查以上代码变更，输出严格的结构化 JSON。\n\n");
-        sb.append("**输出格式**（一个 JSON 对象，不要 markdown 代码块标记）：\n");
-        sb.append("```\n");
-        sb.append("{\n");
-        sb.append("  \"comments\": [\n");
-        sb.append("    {\n");
-        sb.append("      \"path\": \"文件路径（相对于项目根目录）\",\n");
-        sb.append("      \"category\": \"问题分类代码（见下方清单）\",\n");
-        sb.append("      \"content\": \"问题描述（简洁明确，说明什么问题、为什么是问题）\",\n");
-        sb.append("      \"existingCode\": \"现有问题代码\",\n");
-        sb.append("      \"suggestionCode\": \"建议修改后的代码（如适用）\",\n");
-        sb.append("      \"startLine\": 行号（整数，对应 diff 中 @@ -a,b +c,d @@ 的 +c 侧行号）,\n");
-        sb.append("      \"endLine\": 行号（整数）,\n");
-        sb.append("      \"thinking\": \"分析推理过程\"\n");
-        sb.append("    }\n");
-        sb.append("  ]\n");
-        sb.append("}\n");
-        sb.append("```\n\n");
-        sb.append("**审查清单 — 请逐项检查每处变更，发现问题时在 category 字段标注对应代码**：\n\n");
-        sb.append("⚠️ **分类优先级（当一个问题命中多个分类时，选优先级最高的）**：\n");
-        sb.append("  SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK >\n");
-        sb.append("  ERROR_HANDLING > ARCHITECTURE > COMPILE_ERROR > LOGIC_ERROR > PERFORMANCE >\n");
-        sb.append("  DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n");
-        sb.append("  例：`@GetMapping` 做写操作且缺少权限校验 → SECURITY（不是 CODE_STYLE）\n");
-        sb.append("  例：硬编码了密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
-        sb.append("P0 阻断（必须检查，发现即阻断）：\n");
-        sb.append("□ SECURITY - SQL注入：用户输入拼接到SQL/HQL/JPA原生查询中？MyBatis ${} 而非 #{}？\n");
-        sb.append("□ SECURITY - XSS/权限绕过：用户输入未转义输出？敏感操作缺少 @PreAuthorize 或角色校验？\n");
-        sb.append("□ SECURITY - 反序列化漏洞：ObjectInputStream.readObject() 从不可信来源读取？是否有白名单校验？\n");
-        sb.append("□ SECURITY - SSRF：URL/URI 参数来自用户输入且未校验？RestTemplate/HttpClient 访问用户指定的 URL？\n");
-        sb.append("□ SECURITY - 路径穿越：文件路径拼接了用户输入？是否包含 ../ 或绝对路径绕过？\n");
-        sb.append("□ SECURITY - XXE：XML 解析是否禁用了外部实体（DocumentBuilderFactory.setExpandEntityReferences(false)）？\n");
-        sb.append("□ SECRET_EXPOSURE - 敏感信息：**仅限 Java 代码中**硬编码密码/Token/API密钥/AccessKey/Secret？注意：yml/xml/properties 配置文件中的密码是正常部署配置，不要报。\n");
-        sb.append("□ TRANSACTION - 事务：写操作（INSERT/UPDATE/DELETE）是否有 @Transactional？事务传播/回滚策略是否正确？\n\n");
-        sb.append("P1 高危（重点检查）：\n");
-        sb.append("□ NPE - 空指针：方法返回值/参数/集合元素使用前是否判空？Optional.get()/Stream.findFirst().get() 有无保护？\n");
-        sb.append("□ CONCURRENCY - 并发/死锁：共享可变变量是否线程安全（synchronized/volatile/AtomicXxx）？synchronized 块是否嵌套（死锁风险）？HashMap 是否误用于多线程（应改用 ConcurrentHashMap）？\n");
-        sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
-        sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
-        sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？注解放错位置导致功能不生效（如 @DS/@Transactional/@Cacheable 放在接口而非实现类、@Async 无代理调用）？\n");
-        sb.append("~~COMPILE_ERROR - 编译错误~~ → **跳过**（见上方「编译错误跳过规则」）\n\n");
-        sb.append("P2 中危（注意检查）：\n");
-        sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？是否有不必要的对象创建？字符串拼接是否用 StringBuilder？\n");
-        sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？是否有未使用的 import？\n\n");
-        sb.append("P3 低危（顺带指出）：\n");
-        sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径、未提取常量？\n");
-        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？不会导致实际 bug 但不规范、不优雅的写法也归入此类。\n");
-        sb.append("□ DEAD_CODE - 冗余/死代码：定义了但从未调用的方法/变量？永远不执行的分支（if(false)/return后的代码）？重复代码块？不必要的 import？\n\n");
-        sb.append("**自相矛盾过滤规则（必须遵守）**：\n");
-        sb.append("- 如果你在 content 或 trigger 中写了「不会抛异常」「不会触发 NPE」「实际不会有问题」等自我否认的描述，说明这不是真正的问题，**不要报告此 finding**\n");
-        sb.append("- 发现写法不规范但不会产生实际 bug 的情况 → 归类为 CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度\n\n");
-        sb.append("**evidence 字段要求（必须遵守）**：\n");
-        sb.append("- existingCode 必须是 diff 中对应的**实际源码**，从 ```diff 代码块中复制，不要自己编造或概括\n");
-        sb.append("- 如果涉及多行代码，完整复制，太长时可以在非关键部分用 \"... [省略中间N行] ...\" 代替\n");
-        sb.append("- **严禁**在 existingCode 中用文字描述代替源码（如「定义了三个相同 id 的 select」这种）\n\n");
-        sb.append("□ DEAD_CODE - 冗余/死代码：定义了但从未调用的方法/变量？永远不执行的分支（if(false)/return后的代码）？重复代码块？不必要的 import？\n\n");
-        sb.append("**要求**：\n");
-        sb.append("1. 每个 comment 必须包含 path、category、content、startLine、endLine 字段\n");
-        sb.append("2. category 必须填写清单中对应的分类代码（如 NPE、SECURITY、PERFORMANCE 等）\n");
-        sb.append("3. startLine 对应 diff 中新增/修改代码在原文件中的行号\n");
-        sb.append("4. 如果没有发现问题，返回 {\"comments\": []}\n");
-        sb.append("5. 只输出 JSON，不要有任何其他文字或解释\n");
-        sb.append("6. 不要用 ```json ``` 包裹，直接输出 { 开头\n");
-        sb.append("7. **禁止使用省略号（...）** — content/thinking/existingCode/suggestionCode 都输出完整内容，不截断不缩写");
-
+        appendReviewChecklist(sb, false);    // diff 模式
         return sb.toString();
     }
 
@@ -1561,7 +1469,7 @@ public class CodeReviewAiService {
         }
 
         // 审查清单
-        appendReviewChecklist(sb);
+        appendReviewChecklist(sb, false);
 
         return sb.toString();
     }
@@ -1602,124 +1510,78 @@ public class CodeReviewAiService {
             sb.append("## 架构上下文\n").append(group.background).append("\n\n");
         }
 
-        appendReviewChecklist(sb);
+        appendReviewChecklist(sb, true);
         return sb.toString();
     }
 
-    /** 追加审查清单（方案A 和方案D 共用，与 diff 模式对齐） */
-    private void appendReviewChecklist(StringBuilder sb) {
+    /** 追加审查清单（压缩统一版，diff/全量/迭代三种模式共用核心内容） */
+    private void appendReviewChecklist(StringBuilder sb, boolean isFullScan) {
+        // ===== S1: 最高优先级 — 不要报告什么 =====
         sb.append("## 审查要求\n\n");
+        sb.append("### ⛔ 不要报告的情况（最高优先级）\n\n");
+        if (isFullScan) {
+            sb.append("**全量模式**：你能看到本模块全部文件，但跨模块引用看不到——不要报「类/Bean/方法不存在」。\n");
+        } else {
+            sb.append("**Diff 模式**：你只能看到变更文件——未变更代码不可见，不要报「类/Bean/方法/字段不存在」。\n");
+        }
+        sb.append("**编译/语法**：代码能构建部署说明无编译错误，不要报类型不匹配/签名不对/缺引号/POM配置等问题。\n");
+        sb.append("**不确定不要报**：心想「可能」「也许」「建议检查」→ 直接跳过。只有代码中能确证的问题才报。\n");
+        sb.append("**自我否认**：如果写了「不会抛异常」「实际不会有问题」→ 立刻删除此 finding。\n");
+        sb.append("**不会产生 bug 的不规范写法** → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度。\n\n");
 
-        // 全量模式注意事项
-        sb.append("⚠️ **全量扫描模式说明**：\n");
-        sb.append("- 你看到的是模块内文件的完整源码（非 diff），请基于完整代码上下文审查\n");
-        sb.append("- 你可以看到本模块内所有文件，跨文件调用关系可以完整分析\n");
-        sb.append("- 你**看不到其他模块的代码** — 如果 @Autowired 的 bean 定义在其他模块，不要报「bean 不存在」\n");
-        sb.append("- 如果 import 了其他模块的类但看不到其源码，这是正常的，不要报「类不存在」\n");
-        sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n\n");
-        sb.append("⚠️ **编译错误跳过规则（以下类型不要报告）**：\n");
-        sb.append("代码能成功构建并部署，说明不存在编译错误。以下类型即使看到疑似问题也不要报告：\n");
-        sb.append("1. **引用不存在的类/Bean/方法/字段** — 跨模块引用看不到是正常的，编译器会检查\n");
-        sb.append("2. **方法签名不匹配（参数类型/数量）** — 可能有重载，或定义在其他模块\n");
-        sb.append("3. **字段/属性类型不匹配** — 字段定义在其他模块的实体类/DTO 中\n");
-        sb.append("4. **未实现接口/抽象类方法** — 接口定义在其他模块\n");
-        sb.append("5. **@Override 签名与父类不一致** — 父类在其他模块\n");
-        sb.append("6. **泛型类型不匹配** — 泛型定义在其他模块\n");
-        sb.append("7. **@Value 引用的配置 key 不存在** — 配置可能在其他模块的 yml/properties 中\n");
-        sb.append("8. **MyBatis XML 的 resultType/parameterType 指向的类不存在** — 实体类在其他模块\n");
-        sb.append("9. **@MapperScan/@ComponentScan 扫描路径不存在** — 扫描目标在其他模块\n");
-        sb.append("10. **语法错误（缺引号、缺分号、缺括号）** — IDE 实时检查，不会提交到代码库\n\n");
+        // ===== S2: 分类优先级 =====
+        sb.append("### 分类优先级\n");
+        sb.append("`SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK > ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE > DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER`\n");
+        sb.append("举例：@DS 放在接口而非实现类导致不生效 → LOGIC_ERROR（不是 CODE_STYLE）；硬编码密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
 
-        // 置信度校准规则（与 diff 模式一致）
-        sb.append("**置信度校准规则**：\n");
-        sb.append("- 确定是缺陷（有明确证据、代码中就能证实的）→ confidence 0.85-0.99\n");
-        sb.append("- 有趋势/特征但不完全确定（如代码模式像 bug，但缺少上下文证实）→ confidence ≤ 0.70\n");
-        sb.append("- 纯猜测/不确定/「可能有风险」/「建议检查是否有」→ **不要报**，这不是代码审查要做的事\n");
-        sb.append("- 如果你在 content 中写了「可能」「也许」「不确定」「需要验证」「建议检查是否有」，\n");
-        sb.append("  说明你自己都不确定，此时 confidence 必须 ≤ 0.70\n\n");
+        // ===== S3: 审查清单 =====
+        sb.append("### 审查清单\n\n");
+        sb.append("**P0 阻断**：\n");
+        sb.append("- SECURITY：SQL注入（${}拼接）、XSS、权限绕过、反序列化、SSRF、路径穿越、XXE\n");
+        sb.append("- SECRET_EXPOSURE：Java 代码中硬编码密码/Token/密钥（配置文件中的不算）\n");
+        sb.append("- TRANSACTION：写操作缺少 @Transactional\n\n");
 
-        sb.append("请逐文件逐行审查以上代码，输出严格的结构化 JSON。\n\n");
+        sb.append("**P1 高危**：\n");
+        sb.append("- NPE：返回值/参数/集合元素未判空；Optional.get() 无保护\n");
+        sb.append("- CONCURRENCY：共享可变变量无线程安全；HashMap 误用于多线程\n");
+        sb.append("- RESOURCE_LEAK：Stream/Connection/IO 未在 try-with-resources 关闭\n");
+        sb.append("- ERROR_HANDLING：空 catch、吞异常、finally 中有 return\n");
+        sb.append("- ARCHITECTURE：循环依赖、Controller 直接调 DAO\n");
+        sb.append("- LOGIC_ERROR：条件/计算错误、边界值未处理、注解放错位置不生效（@DS/@Transactional/@Cacheable 在接口、@Async 无代理调用）\n\n");
 
-        // 输出格式
-        sb.append("**输出格式**（一个 JSON 对象，不要 markdown 代码块标记）：\n");
-        sb.append("```\n");
-        sb.append("{\n");
-        sb.append("  \"comments\": [\n");
-        sb.append("    {\n");
-        sb.append("      \"path\": \"文件路径（相对于项目根目录）\",\n");
-        sb.append("      \"category\": \"问题分类代码（见下方清单）\",\n");
-        sb.append("      \"content\": \"问题描述（简洁明确，说明什么问题、为什么是问题）\",\n");
-        sb.append("      \"existingCode\": \"现有问题代码\",\n");
-        sb.append("      \"suggestionCode\": \"建议修改后的代码（如适用）\",\n");
-        sb.append("      \"startLine\": 行号（整数，对应源文件中的行号）,\n");
-        sb.append("      \"endLine\": 行号（整数）,\n");
-        sb.append("      \"thinking\": \"分析推理过程\"\n");
-        sb.append("    }\n");
-        sb.append("  ]\n");
-        sb.append("}\n");
-        sb.append("```\n\n");
+        sb.append("**P2 中危**：\n");
+        sb.append("- PERFORMANCE：循环内 DB 调用；字符串 + 拼接\n");
+        sb.append("- DEPENDENCY：SNAPSHOT/过期版本\n\n");
 
-        // 分类优先级（带具体例子）
-        sb.append("**审查清单 — 请逐项检查每处代码，发现问题时在 category 字段标注对应代码**：\n\n");
-        sb.append("⚠️ **分类优先级（当一个问题命中多个分类时，选优先级最高的）**：\n");
-        sb.append("  SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK >\n");
-        sb.append("  ERROR_HANDLING > ARCHITECTURE > COMPILE_ERROR > LOGIC_ERROR > PERFORMANCE >\n");
-        sb.append("  DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n");
-        sb.append("  例：`@GetMapping` 做写操作且缺少权限校验 → SECURITY（不是 CODE_STYLE）\n");
-        sb.append("  例：硬编码了密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
+        sb.append("**P3 低危**：\n");
+        sb.append("- HARDCODED：魔法数字、写死配置\n");
+        sb.append("- CODE_STYLE：命名不规范、GET 执行写操作、不规范但不产生 bug\n");
+        sb.append("- DEAD_CODE：未使用的变量/方法、永不执行的分支\n\n");
 
-        // P0 阻断
-        sb.append("P0 阻断（必须检查，发现即阻断）：\n");
-        sb.append("□ SECURITY - SQL注入：用户输入拼接到SQL/HQL/JPA原生查询中？MyBatis ${} 而非 #{}？\n");
-        sb.append("□ SECURITY - XSS/权限绕过：用户输入未转义输出？敏感操作缺少 @PreAuthorize 或角色校验？\n");
-        sb.append("□ SECURITY - 反序列化漏洞：ObjectInputStream.readObject() 从不可信来源读取？是否有白名单校验？\n");
-        sb.append("□ SECURITY - SSRF：URL/URI 参数来自用户输入且未校验？RestTemplate/HttpClient 访问用户指定的 URL？\n");
-        sb.append("□ SECURITY - 路径穿越：文件路径拼接了用户输入？是否包含 ../ 或绝对路径绕过？\n");
-        sb.append("□ SECURITY - XXE：XML 解析是否禁用了外部实体（DocumentBuilderFactory.setExpandEntityReferences(false)）？\n");
-        sb.append("□ SECRET_EXPOSURE - 敏感信息：**仅限 Java 代码中**硬编码密码/Token/API密钥/AccessKey/Secret？注意：yml/xml/properties 配置文件中的密码是正常部署配置，不要报。\n");
-        sb.append("□ TRANSACTION - 事务：写操作（INSERT/UPDATE/DELETE）是否有 @Transactional？事务传播/回滚策略是否正确？\n\n");
+        // ===== S4: 严重度校准 =====
+        sb.append("### 严重度校准\n");
+        sb.append("- GET 执行写操作 → CODE_STYLE + P3，除非有实际注入/越权\n");
+        sb.append("- 字段有默认值（`Boolean x = true`）→ 不要报 NPE\n");
+        sb.append("- pom.xml/properties/yml → 不要报（部署配置问题）\n\n");
 
-        // P1 高危
-        sb.append("P1 高危（重点检查）：\n");
-        sb.append("□ NPE - 空指针：方法返回值/参数/集合元素使用前是否判空？Optional.get()/Stream.findFirst().get() 有无保护？\n");
-        sb.append("□ CONCURRENCY - 并发/死锁：共享可变变量是否线程安全（synchronized/volatile/AtomicXxx）？synchronized 块是否嵌套（死锁风险）？HashMap 是否误用于多线程（应改用 ConcurrentHashMap）？\n");
-        sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
-        sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
-        sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？注解放错位置导致功能不生效（如 @DS/@Transactional/@Cacheable 放在接口而非实现类、@Async 无代理调用）？\n");
-        sb.append("~~COMPILE_ERROR - 编译错误~~ → **跳过**（见上方「编译错误跳过规则」）\n\n");
+        // ===== S5: evidence =====
+        sb.append("### evidence 要求\n");
+        sb.append("- 从源码**复制原文**，禁止用文字描述代替\n");
+        sb.append("- 正确：`String sql = \"DELETE FROM \" + table;`　错误：「拼接了用户输入的表名」\n\n");
 
-        // P2 中危
-        sb.append("P2 中危（注意检查）：\n");
-        sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？是否有不必要的对象创建？字符串拼接是否用 StringBuilder？\n");
-        sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？是否有未使用的 import？\n\n");
+        // ===== S6: 置信度 =====
+        sb.append("### 置信度\n");
+        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70（且必须先 grep 确认，见上方不要报告规则）\n\n");
 
-        // P3 低危
-        sb.append("P3 低危（顺带指出）：\n");
-        sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径、未提取常量？\n");
-        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？不会导致实际 bug 但不规范、不优雅的写法也归入此类。\n");
-        sb.append("□ DEAD_CODE - 冗余/死代码：定义了但从未调用的方法/变量？永远不执行的分支（if(false)/return后的代码）？重复代码块？不必要的 import？\n\n");
-
-        // 自相矛盾过滤规则
-        sb.append("**自相矛盾过滤规则（必须遵守）**：\n");
-        sb.append("- 如果你在 content 或 trigger 中写了「不会抛异常」「不会触发 NPE」「实际不会有问题」等自我否认的描述，说明这不是真正的问题，**不要报告此 finding**\n");
-        sb.append("- 发现写法不规范但不会产生实际 bug 的情况 → 归类为 CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度\n\n");
-
-        // evidence 要求
-        sb.append("**evidence 字段要求（必须遵守）**：\n");
-        sb.append("- existingCode 必须是源文件中的**实际源码**，从 ```java 代码块中复制，不要自己编造或概括\n");
-        sb.append("- 如果涉及多行代码，完整复制，太长时可以在非关键部分用 \"... [省略中间N行] ...\" 代替\n");
-        sb.append("- **严禁**在 existingCode 中用文字描述代替源码（如「定义了三个相同 id 的 select」这种）\n\n");
-
-        // 输出要求
-        sb.append("**要求**：\n");
-        sb.append("1. 每个 comment 必须包含 path、category、content、startLine、endLine 字段\n");
-        sb.append("2. category 必须填写清单中对应的分类代码（如 NPE、SECURITY、PERFORMANCE 等）\n");
-        sb.append("3. startLine 对应源文件中的实际行号\n");
-        sb.append("4. 如果没有发现问题，返回 {\"comments\": []}\n");
-        sb.append("5. 只输出 JSON，不要有任何其他文字或解释\n");
-        sb.append("6. 不要用 ```json ``` 包裹，直接输出 { 开头\n");
-        sb.append("7. **禁止使用省略号（...）** — content/thinking/existingCode/suggestionCode 都输出完整内容，不截断不缩写");
+        // ===== S7: 输出格式 + 要求 =====
+        sb.append("### 输出格式\n");
+        sb.append("直接输出 JSON（不要 ```json 包裹）：\n");
+        sb.append("{\"comments\": [{\"path\": \"...\", \"category\": \"NPE\", \"content\": \"...\", \"existingCode\": \"...\", \"suggestionCode\": \"...\", \"startLine\": ");
+        sb.append(isFullScan ? "源文件行号" : "diff +c侧行号");
+        sb.append(", \"endLine\": 行号, \"thinking\": \"...\"}]}\n");
+        sb.append("没有问题则 {\"comments\": []}\n");
+        sb.append("category 取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
+        sb.append("每个 comment 必须包含 path、category、content、startLine、endLine 字段。只输出 JSON，不要有其他文字。\n");
     }
 
     // ================================================================
@@ -2482,85 +2344,48 @@ public class CodeReviewAiService {
         sb.append("2. 对可疑方法发 grep 请求，系统会返回调用链，帮你判断影响范围\n");
         sb.append("3. 如果发现跨模块调用，重点关注事务一致性和异常传播\n\n");
 
-        // 编译错误跳过规则
-        sb.append("## 编译错误跳过规则（以下类型不要报告）\n");
-        sb.append("代码能成功构建并部署，说明不存在编译错误。以下类型即使看到疑似问题也不要报告：\n");
-        sb.append("1. 引用不存在的类/Bean/方法/字段 — 跨模块引用看不到是正常的\n");
-        sb.append("2. 方法签名不匹配 — 可能有重载，或定义在其他模块\n");
-        sb.append("3. 字段/属性类型不匹配 — 字段定义在其他模块的实体类/DTO 中\n");
-        sb.append("4. 未实现接口/抽象类方法 — 接口定义在其他模块\n");
-        sb.append("5. @Override 签名与父类不一致 — 父类在其他模块\n");
-        sb.append("6. 泛型类型不匹配 — 泛型定义在其他模块\n");
-        sb.append("7. @Value 引用的配置 key 不存在 — 配置可能在其他模块\n");
-        sb.append("8. MyBatis XML 的 resultType/parameterType 指向的类不存在\n\n");
+        // 编译错误 + 不要报告规则（最高优先级）
+        sb.append("## ⛔ 不要报告的情况\n");
+        sb.append("- 跨模块引用看不到 → 正常，不要报「类/Bean/方法不存在」\n");
+        sb.append("- 类型不匹配/签名不对/缺引号 → 编译错误，能部署说明不存在\n");
+        sb.append("- pom.xml/properties/yml → 不要报（部署配置问题）\n");
+        sb.append("- 不确定 → 用 grep_requests 确认后再报，不要猜测\n");
+        sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除\n");
+        sb.append("- 不规范但不会产生 bug → CODE_STYLE + LOW，不要报成 NPE/LOGIC_ERROR 等\n\n");
 
         // 审查清单
-        sb.append("## 审查清单 — 请逐项检查每处代码\n\n");
-        sb.append("⚠️ **分类优先级（当一个问题命中多个分类时，选优先级最高的）**：\n");
-        sb.append("  SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK >\n");
-        sb.append("  ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE >\n");
-        sb.append("  DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER\n\n");
+        sb.append("## 审查清单\n\n");
+        sb.append("分类优先级：`SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK > ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE > DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER`\n");
+        sb.append("举例：@DS 在接口上不生效 → LOGIC_ERROR（不是 CODE_STYLE）；硬编码密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
 
-        sb.append("P0 阻断（必须检查，发现即阻断）：\n");
-        sb.append("□ SECURITY - SQL注入：用户输入拼接到SQL/HQL/JPA原生查询中？MyBatis ${} 而非 #{}？\n");
-        sb.append("□ SECURITY - XSS/权限绕过：用户输入未转义输出？敏感操作缺少 @PreAuthorize 或角色校验？\n");
-        sb.append("□ SECURITY - 反序列化漏洞：ObjectInputStream.readObject() 从不可信来源读取？\n");
-        sb.append("□ SECURITY - SSRF：URL/URI 参数来自用户输入且未校验？\n");
-        sb.append("□ SECURITY - 路径穿越：文件路径拼接了用户输入？\n");
-        sb.append("□ SECRET_EXPOSURE - 敏感信息：**仅限 Java 代码中**硬编码密码/Token/API密钥。注意：配置文件中的密码是正常部署配置，不要报。\n");
-        sb.append("□ TRANSACTION - 事务：写操作是否有 @Transactional？事务传播/回滚策略是否正确？\n\n");
+        sb.append("**P0**：SECURITY（SQL注入/${}拼接/XSS/权限绕过/反序列化/SSRF/路径穿越）、TRANSACTION（写操作缺 @Transactional）、SECRET_EXPOSURE（Java 代码中硬编码密码/Token/密钥，配置文件中的不算）\n\n");
 
-        sb.append("P1 高危（重点检查）：\n");
-        sb.append("□ NPE - 空指针：方法返回值/参数/集合元素使用前是否判空？Optional.get() 有无保护？\n");
-        sb.append("□ CONCURRENCY - 并发/死锁：共享可变变量是否线程安全？synchronized 块是否嵌套？HashMap 是否误用于多线程？\n");
-        sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
-        sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return？\n");
-        sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值是否处理？equals/hashCode 是否成对？BigDecimal 精度？MyBatis XML 中同名 select/insert/update/delete id 重复？注解放错位置导致功能不生效（如 @DS/@Transactional/@Cacheable 放在接口而非实现类）？\n\n");
+        sb.append("**P1**：NPE（未判空就使用）、CONCURRENCY（共享变量无线程安全、HashMap 误用）、RESOURCE_LEAK（未 try-with-resources 关闭）、ERROR_HANDLING（空 catch/吞异常/finally 中 return）、ARCHITECTURE（循环依赖/Controller 直接调 DAO）、LOGIC_ERROR（条件错误/边界未处理/注解放错位置不生效）\n\n");
 
-        sb.append("P2 中危（注意检查）：\n");
-        sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？字符串拼接是否用 StringBuilder？\n");
-        sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？\n\n");
+        sb.append("**P2**：PERFORMANCE（循环内 DB 调用/+拼接）、DEPENDENCY（SNAPSHOT/过期版本）\n\n");
 
-        sb.append("P3 低危（顺带指出）：\n");
-        sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径？\n");
-        sb.append("□ CODE_STYLE - 代码风格：命名不规范、GET 请求执行写操作？不会导致实际 bug 但不规范、不优雅的写法也归入此类。\n");
-        sb.append("□ DEAD_CODE - 冗余/死代码：未调用的方法/变量？永远不执行的分支？\n\n");
-
-        // 自相矛盾过滤规则
-        sb.append("**自相矛盾过滤规则（必须遵守）**：\n");
-        sb.append("- 如果你在 content 或 trigger 中写了「不会抛异常」「不会触发 NPE」「实际不会有问题」等自我否认的描述，说明这不是真正的问题，**不要报告此 finding**\n");
-        sb.append("- 发现写法不规范但不会产生实际 bug 的情况 → 归类为 CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度\n\n");
+        sb.append("**P3**：HARDCODED（魔法数字/写死配置）、CODE_STYLE（命名/GET 写操作/不规范但不产生 bug）、DEAD_CODE（未使用/永不执行）\n\n");
 
         // 严重度校准
-        sb.append("## 严重度校准（必须遵守）\n");
-        sb.append("- GET 请求执行写操作（如 @GetMapping(\"/delete\")）→ 归类为 CODE_STYLE + P3，**不是** SECURITY/P0。除非有实际的注入或越权风险。\n");
-        sb.append("- 字段有默认值（如 `private Boolean autoRollback = true`）→ 不要报 NPE，反序列化时默认值会生效\n");
-        sb.append("- pom.xml、.properties、.yml 等配置/构建文件中的问题（如 mainClass 错误）→ 不要报，这些是部署配置问题\n");
-        sb.append("- 只有存在**实际可利用的安全漏洞**（SQL注入、XSS、SSRF、反序列化等）时才归类为 SECURITY\n\n");
+        sb.append("## 严重度校准\n");
+        sb.append("- GET 执行写操作 → CODE_STYLE + LOW，除非有实际注入/越权\n");
+        sb.append("- 字段有默认值（`Boolean x = true`）→ 不要报 NPE\n");
+        sb.append("- 只有实际可利用的攻击（SQL注入/XSS/SSRF等）才归 SECURITY\n\n");
 
         // evidence 要求
-        sb.append("## ⚠️ evidence 字段要求（最重要，必须遵守）\n");
-        sb.append("- evidence 必须是源文件中的**实际源码原文**，直接从上面的代码块中复制\n");
-        sb.append("- ✅ 正确示例：`String sql = \"DELETE FROM \" + tableName + \" WHERE \" + whereSql;`\n");
-        sb.append("- ✅ 正确示例：`private String devPassword;`\n");
-        sb.append("- ✅ 多行时可省略中间部分：`public void process() {\\n    ... [省略20行] ...\\n    return result;\\n}`\n");
-        sb.append("- ❌ 错误示例：「字段 devPassword 直接暴露在 VO 中，未脱敏」← 这是描述，不是源码\n");
-        sb.append("- ❌ 错误示例：「定义了三个相同 id 的 select」← 这是概括，不是源码\n");
-        sb.append("- **严禁**用文字描述代替源码，否则该 finding 将被拒绝\n\n");
+        sb.append("## evidence 要求\n");
+        sb.append("- 从源码**复制原文**，禁止用文字描述代替\n");
+        sb.append("- ✅ `String sql = \"DELETE FROM \" + table;`　❌「拼接了用户输入的表名」\n\n");
 
         // severity/category 说明
-        sb.append("severity（严重度）取值：BLOCKER, HIGH, MEDIUM, LOW\n");
-        sb.append("category（问题分类）取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, COMPILE_ERROR, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
-        sb.append("注意：severity 和 category 是两个独立字段，不要混淆。例如 category 不能填 \"P0 BLOCKER\"，应该填 \"SECURITY\"\n\n");
+        sb.append("severity 取值：BLOCKER, HIGH, MEDIUM, LOW\n");
+        sb.append("category 取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
+        sb.append("severity 和 category 是独立字段，不要混淆。category 不能填 \"P0 BLOCKER\"\n\n");
 
-        // 置信度规则
-        sb.append("## 置信度规则\n");
-        sb.append("- 确定是缺陷（有明确证据、代码中就能证实的）→ confidence 0.85-0.99\n");
-        sb.append("- 有趋势/特征但不完全确定 → confidence ≤ 0.70，且必须先 grep 确认再输出到 confirmed\n");
-        sb.append("- 纯猜测/假设性判断（含\"若\"\"可能\"\"假设\"\"如果被外部\"等措辞）→ **不要报**，先 grep 确认\n");
-        sb.append("- 如果你在 evidence 中写了「可能」「也许」「不确定」「需要验证」「建议检查」，\n");
-        sb.append("  说明你自己都不确定，此时不要输出到 confirmed，应该用 grep_requests 去确认\n");
+        // 置信度
+        sb.append("## 置信度\n");
+        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70 且必须先 grep\n");
+        sb.append("- 猜测性判断（含「若」「可能」「假设」）→ 不要报，先 grep\n");
 
         return sb.toString();
     }
