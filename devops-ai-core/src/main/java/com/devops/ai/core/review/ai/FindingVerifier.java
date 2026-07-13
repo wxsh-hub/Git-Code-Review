@@ -1,5 +1,6 @@
 package com.devops.ai.core.review.ai;
 
+import com.devops.ai.core.crg.CrgClient;
 import com.devops.ai.core.review.model.FilterResult;
 import com.devops.ai.core.review.model.Finding;
 import com.devops.ai.core.review.model.FindingCategory;
@@ -7,6 +8,7 @@ import com.devops.ai.core.review.model.FindingSeverity;
 import com.devops.ai.core.review.model.FindingStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -32,6 +34,14 @@ import java.util.regex.Pattern;
 public class FindingVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(FindingVerifier.class);
+
+    /** Phase 5 — CRG 客户端（可选注入，CRG 不可用时为 null） */
+    @Autowired(required = false)
+    private CrgClient crgClient;
+
+    /** Phase 5 — GrepTracer（用于符号解析） */
+    @Autowired(required = false)
+    private GrepTracer grepTracer;
 
     // 误报检测：evidence 中是否已包含防护模式
     private static final Pattern TRY_CATCH = Pattern.compile("try\\s*\\{");
@@ -83,7 +93,14 @@ public class FindingVerifier {
             Finding current = f;
             boolean falsePositive = checkFalsePositive(current);
             boolean triggerDowngraded = checkTriggerCompleteness(current);
-            if (falsePositive || triggerDowngraded) {
+
+            // Phase 5: CRG 调用链验证（事务/并发/资源泄漏类 findings）
+            boolean crgDowngraded = false;
+            if (!falsePositive && !triggerDowngraded) {
+                crgDowngraded = verifyWithCrg(current);
+            }
+
+            if (falsePositive || triggerDowngraded || crgDowngraded) {
                 result.downgrade(current);
             } else {
                 result.accept(current);
@@ -292,6 +309,7 @@ public class FindingVerifier {
         // TODO Phase 5: blameDetails (Map<String, BlameShare>) 合并 —— a 优先，同 key 用 a
         merged.setReviewer(a.getReviewer());         // Phase 6 填充，取先出现的
         merged.setModuleName(a.getModuleName());     // Phase 4 填充，同组内一定相同
+        merged.setSymbol(mergeText(a.getSymbol(), b.getSymbol()));  // Phase 5 symbol 合并
 
         return merged;
     }
@@ -408,6 +426,117 @@ public class FindingVerifier {
 
     private boolean isHighSeverity(FindingSeverity s) {
         return s == FindingSeverity.BLOCKER || s == FindingSeverity.HIGH;
+    }
+
+    // ================================================================
+    // Phase 5: CRG 调用链验证
+    // ================================================================
+
+    /**
+     * 用 CRG 图数据验证特定类型 findings 的准确性。
+     *
+     * <p>验证策略（按 category）：
+     * <ul>
+     *   <li>TRANSACTION — 检查调用链上是否有 @Transactional 注解
+     *       （有 → 可能误报，降级 confidence）</li>
+     *   <li>CONCURRENCY — 检查是否真的有多个调用者来自不同线程入口
+     *       （调用者 ≤ 1 → 可能误报）</li>
+     *   <li>RESOURCE_LEAK — 检查资源是否传递给调用者
+     *       （有调用者持有该资源 → 可能确实泄漏，不降级）</li>
+     * </ul>
+     *
+     * @return true 如果 finding 被降级
+     */
+    private boolean verifyWithCrg(Finding f) {
+        if (crgClient == null || !crgClient.isEnabled()) return false;
+        if (f.getSymbol() == null || f.getSymbol().isEmpty()) return false;
+        if (grepTracer == null) return false;
+
+        FindingCategory cat = f.getCategory();
+        if (cat == null) return false;
+
+        try {
+            String resolved = grepTracer.resolveSymbolToCrgTarget(f.getSymbol());
+            if (resolved == null) {
+                log.debug("[CRG Phase 5] symbol '{}' not resolved, skipping verification", f.getSymbol());
+                return false;
+            }
+
+            com.devops.ai.core.crg.CrgModels.CrgQueryResult callers =
+                    crgClient.queryGraph("callers_of", resolved);
+
+            switch (cat) {
+                case TRANSACTION:
+                    return verifyTransaction(f, callers);
+                case CONCURRENCY:
+                    return verifyConcurrency(f, callers);
+                case RESOURCE_LEAK:
+                    return verifyResourceLeak(f, callers);
+                default:
+                    return false;
+            }
+        } catch (Exception e) {
+            log.warn("[CRG Phase 5] verification failed for '{}': {}", f.getSymbol(), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 验证事务类 finding：如果调用链上有 @Transactional，降级 confidence。
+     */
+    private boolean verifyTransaction(Finding f,
+                                       com.devops.ai.core.crg.CrgModels.CrgQueryResult callers) {
+        if (callers == null || !callers.hasResults()) return false;
+
+        for (com.devops.ai.core.crg.CrgModels.CrgNode caller : callers.getResults()) {
+            java.util.List<String> annotations = caller.getAnnotations();
+            if (annotations != null && annotations.contains("Transactional")) {
+                log.info("[CRG Phase 5] TRANSACTION fake-positive: '{}' has @Transactional caller '{}'",
+                        f.getSymbol(), caller.getName());
+                f.setConfidence(f.getConfidence() * 0.75);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 验证并发类 finding：调用者 ≤ 1 时可能不是真正的并发场景。
+     */
+    private boolean verifyConcurrency(Finding f,
+                                       com.devops.ai.core.crg.CrgModels.CrgQueryResult callers) {
+        if (callers == null || !callers.hasResults()) {
+            // 无调用者 → 可能是 true positive（共享变量直接暴露给外部）
+            return false;
+        }
+
+        // 多于 1 个调用者 → 确实是多线程风险
+        if (callers.getResults().size() > 1) {
+            return false;
+        }
+
+        // 只有 1 个调用者 → 标记但仍然保留（单调用者不代表单线程）
+        log.debug("[CRG Phase 5] CONCURRENCY: '{}' has only {} caller, keeping",
+                f.getSymbol(), callers.getResults().size());
+        return false;
+    }
+
+    /**
+     * 验证资源泄漏类 finding：如果资源传递给了下游调用者，加强置信度（更可能是真问题）。
+     */
+    private boolean verifyResourceLeak(Finding f,
+                                        com.devops.ai.core.crg.CrgModels.CrgQueryResult callers) {
+        if (callers == null || !callers.hasResults()) {
+            // 资源从未被传递给外部 → 降低置信度（可能只在方法内部使用后就关闭了）
+            log.info("[CRG Phase 5] RESOURCE_LEAK: '{}' has no callers, downgrading confidence",
+                    f.getSymbol());
+            f.setConfidence(f.getConfidence() * 0.70);
+            return true;
+        }
+        // 资源传递给了其他方法 → 保持，审查正确
+        log.debug("[CRG Phase 5] RESOURCE_LEAK: '{}' has {} callers, keeping finding",
+                f.getSymbol(), callers.getResults().size());
+        return false;
     }
 
     // ================================================================

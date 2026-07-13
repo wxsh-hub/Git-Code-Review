@@ -1,5 +1,6 @@
 package com.devops.ai.core.review.ai;
 
+import com.devops.ai.core.crg.CrgClient;
 import com.devops.ai.core.llm.LlmClient;
 import com.devops.ai.core.review.model.*;
 import com.devops.ai.infrastructure.entity.AiConfig;
@@ -11,6 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedReader;
@@ -88,6 +90,10 @@ public class ReviewLlmService {
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
     private final ConfigEncryptor configEncryptor;
+
+    /** Phase 5 — CRG 客户端（可选注入，CRG 不可用时为 null） */
+    @Autowired(required = false)
+    private CrgClient crgClient;
 
     public ReviewLlmService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
                             ConfigEncryptor configEncryptor) {
@@ -228,6 +234,15 @@ public class ReviewLlmService {
                         f.getBlameCommitIds().stream()
                                 .map(id -> id.length() >= 8 ? id.substring(0, 8) : id)
                                 .toArray(String[]::new))).append("\n");
+            }
+        }
+
+        // Phase 5: CRG 调用链上下文
+        if (crgClient != null && crgClient.isEnabled() && f.getSymbol() != null
+                && !f.getSymbol().isEmpty()) {
+            String crgContext = buildCrgCallChainContext(f.getSymbol());
+            if (crgContext != null) {
+                sb.append("\n").append(crgContext);
             }
         }
 
@@ -466,6 +481,98 @@ public class ReviewLlmService {
                 String.format("%.0f", originalConfidence * 100),
                 String.format("%.0f", finalConfidence * 100),
                 f.getStatus());
+    }
+
+    // ================================================================
+    // Phase 5: CRG 调用链上下文
+    // ================================================================
+
+    /**
+     * 为 review LLM 构建 CRG 调用链上下文，帮助做出更准确的置信度判断。
+     *
+     * <p>查询包含：
+     * <ul>
+     *   <li>调用者列表（谁调用了这个方法）</li>
+     *   <li>被调用者列表（这个方法调用了谁）</li>
+     * </ul>
+     *
+     * @return 格式化的调用链文本，CRG 不可用或查询失败时返回 null
+     */
+    private String buildCrgCallChainContext(String symbol) {
+        try {
+            // 从 GrepTracer 的符号解析能力获取 CRG target
+            // (这里直接用 CrgClient.searchNodes 做简单解析，避免重复注入 GrepTracer)
+            String methodName = symbol.contains(".")
+                    ? symbol.substring(symbol.lastIndexOf('.') + 1)
+                    : symbol;
+
+            java.util.List<com.devops.ai.core.crg.CrgModels.CrgNode> candidates =
+                    crgClient.searchNodes(methodName, "Function", 5);
+            if (candidates == null || candidates.isEmpty()) return null;
+
+            // 找最佳匹配
+            String resolved = null;
+            if (symbol.contains(".")) {
+                String className = symbol.substring(0, symbol.lastIndexOf('.'));
+                for (com.devops.ai.core.crg.CrgModels.CrgNode node : candidates) {
+                    if (node.getQualifiedName() != null
+                            && node.getQualifiedName().contains(className + "." + methodName)) {
+                        resolved = node.getQualifiedName();
+                        break;
+                    }
+                }
+            }
+            if (resolved == null) {
+                resolved = candidates.get(0).getQualifiedName();
+            }
+            if (resolved == null) return null;
+
+            StringBuilder sb = new StringBuilder();
+            sb.append("调用链分析（CRG）:\n");
+
+            // callers
+            com.devops.ai.core.crg.CrgModels.CrgQueryResult callers =
+                    crgClient.queryGraph("callers_of", resolved);
+            if (callers != null && callers.hasResults()) {
+                int count = callers.getResults().size();
+                sb.append("- 被 ").append(count).append(" 处调用: ");
+                int shown = 0;
+                for (com.devops.ai.core.crg.CrgModels.CrgNode n : callers.getResults()) {
+                    if (shown >= 3) { sb.append("..."); break; }
+                    sb.append(n.getName() != null ? n.getName() : (n.getQualifiedName() != null
+                            ? n.getQualifiedName().split("::").length > 1
+                                ? n.getQualifiedName().split("::")[1] : n.getQualifiedName() : "?"));
+                    if (++shown < Math.min(count, 3)) sb.append(", ");
+                }
+                sb.append("\n");
+            } else {
+                sb.append("- 无调用者\n");
+            }
+
+            // callees
+            com.devops.ai.core.crg.CrgModels.CrgQueryResult callees =
+                    crgClient.queryGraph("callees_of", resolved);
+            if (callees != null && callees.hasResults()) {
+                int count = callees.getResults().size();
+                sb.append("- 调用了 ").append(count).append(" 个方法: ");
+                int shown = 0;
+                for (com.devops.ai.core.crg.CrgModels.CrgNode n : callees.getResults()) {
+                    if (shown >= 3) { sb.append("..."); break; }
+                    sb.append(n.getName() != null ? n.getName() : (n.getQualifiedName() != null
+                            ? n.getQualifiedName().split("::").length > 1
+                                ? n.getQualifiedName().split("::")[1] : n.getQualifiedName() : "?"));
+                    if (++shown < Math.min(count, 3)) sb.append(", ");
+                }
+                sb.append("\n");
+            } else {
+                sb.append("- 无被调用者\n");
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            log.debug("[CRG Phase 5] call chain context build failed for '{}': {}", symbol, e.getMessage());
+            return null;
+        }
     }
 
     // ================================================================
