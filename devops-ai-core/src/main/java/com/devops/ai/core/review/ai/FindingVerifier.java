@@ -458,7 +458,7 @@ public class FindingVerifier {
         try {
             String resolved = grepTracer.resolveSymbolToCrgTarget(f.getSymbol());
             if (resolved == null) {
-                log.debug("[CRG Phase 5] symbol '{}' not resolved, skipping verification", f.getSymbol());
+                log.debug("[CRG Verify] symbol '{}' not resolved, skipping verification", f.getSymbol());
                 return false;
             }
 
@@ -476,7 +476,7 @@ public class FindingVerifier {
                     return false;
             }
         } catch (Exception e) {
-            log.warn("[CRG Phase 5] verification failed for '{}': {}", f.getSymbol(), e.getMessage());
+            log.warn("[CRG Verify] verification failed for '{}': {}", f.getSymbol(), e.getMessage());
             return false;
         }
     }
@@ -491,7 +491,7 @@ public class FindingVerifier {
         for (com.devops.ai.core.crg.CrgModels.CrgNode caller : callers.getResults()) {
             java.util.List<String> annotations = caller.getAnnotations();
             if (annotations != null && annotations.contains("Transactional")) {
-                log.info("[CRG Phase 5] TRANSACTION fake-positive: '{}' has @Transactional caller '{}'",
+                log.info("[CRG Verify] TRANSACTION fake-positive: '{}' has @Transactional caller '{}'",
                         f.getSymbol(), caller.getName());
                 f.setConfidence(f.getConfidence() * 0.75);
                 return true;
@@ -516,7 +516,7 @@ public class FindingVerifier {
         }
 
         // 只有 1 个调用者 → 标记但仍然保留（单调用者不代表单线程）
-        log.debug("[CRG Phase 5] CONCURRENCY: '{}' has only {} caller, keeping",
+        log.debug("[CRG Verify] CONCURRENCY: '{}' has only {} caller, keeping",
                 f.getSymbol(), callers.getResults().size());
         return false;
     }
@@ -528,13 +528,13 @@ public class FindingVerifier {
                                         com.devops.ai.core.crg.CrgModels.CrgQueryResult callers) {
         if (callers == null || !callers.hasResults()) {
             // 资源从未被传递给外部 → 降低置信度（可能只在方法内部使用后就关闭了）
-            log.info("[CRG Phase 5] RESOURCE_LEAK: '{}' has no callers, downgrading confidence",
+            log.info("[CRG Verify] RESOURCE_LEAK: '{}' has no callers, downgrading confidence",
                     f.getSymbol());
             f.setConfidence(f.getConfidence() * 0.70);
             return true;
         }
         // 资源传递给了其他方法 → 保持，审查正确
-        log.debug("[CRG Phase 5] RESOURCE_LEAK: '{}' has {} callers, keeping finding",
+        log.debug("[CRG Verify] RESOURCE_LEAK: '{}' has {} callers, keeping finding",
                 f.getSymbol(), callers.getResults().size());
         return false;
     }

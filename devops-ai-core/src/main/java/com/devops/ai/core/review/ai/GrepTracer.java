@@ -6,6 +6,7 @@ import com.devops.ai.core.review.model.GrepRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -16,7 +17,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+
+import javax.annotation.PostConstruct;
 
 /**
  * Grep 搜索和文件读取服务 — 迭代式深度扫描的核心组件。
@@ -53,12 +57,20 @@ public class GrepTracer {
     /** 方法体最大字符数（超长截断） */
     private static final int MAX_METHOD_CHARS = 5000;
 
-    /** W3 修复 — 最多 8 个并发 grep 子进程 */
-    private final Semaphore grepSemaphore = new Semaphore(8);
+    /** W3 修复 + 4.2 — 并发 grep 信号量，上限可配置（默认 8） */
+    @Value("${ocr.deep-scan.grep-concurrency:8}")
+    private int grepConcurrency;
+    private Semaphore grepSemaphore;  // @PostConstruct 中初始化
 
     /** Phase 3 — CRG 客户端（可选注入，CRG 不可用时为 null） */
     @Autowired(required = false)
     private CrgClient crgClient;
+
+    @PostConstruct
+    private void initSemaphore() {
+        this.grepSemaphore = new Semaphore(grepConcurrency);
+        log.info("[GrepTracer] grep semaphore initialized with concurrency={}", grepConcurrency);
+    }
 
     // ================================================================
     // 公开接口
@@ -503,7 +515,11 @@ public class GrepTracer {
      */
     private String grepSearch(String repoPath, String symbol) {
         try {
-            grepSemaphore.acquire();
+            // 4.2 — tryAcquire 5 秒超时，避免审查线程无限阻塞
+            if (!grepSemaphore.tryAcquire(5, TimeUnit.SECONDS)) {
+                log.warn("[GrepTracer] grep '{}' semaphore timeout after 5s", symbol);
+                return "(grep 并发已满，请稍后重试)";
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return "(grep 执行被中断)";

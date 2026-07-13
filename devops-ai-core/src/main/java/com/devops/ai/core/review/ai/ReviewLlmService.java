@@ -95,6 +95,10 @@ public class ReviewLlmService {
     @Autowired(required = false)
     private CrgClient crgClient;
 
+    /** 1.2 — GrepTracer，复用其符号解析能力，避免重复实现 */
+    @Autowired(required = false)
+    private GrepTracer grepTracer;
+
     public ReviewLlmService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
                             ConfigEncryptor configEncryptor) {
         this.llmClient = llmClient;
@@ -500,30 +504,33 @@ public class ReviewLlmService {
      */
     private String buildCrgCallChainContext(String symbol) {
         try {
-            // 从 GrepTracer 的符号解析能力获取 CRG target
-            // (这里直接用 CrgClient.searchNodes 做简单解析，避免重复注入 GrepTracer)
-            String methodName = symbol.contains(".")
-                    ? symbol.substring(symbol.lastIndexOf('.') + 1)
-                    : symbol;
-
-            java.util.List<com.devops.ai.core.crg.CrgModels.CrgNode> candidates =
-                    crgClient.searchNodes(methodName, "Function", 5);
-            if (candidates == null || candidates.isEmpty()) return null;
-
-            // 找最佳匹配
+            // 1.2 — 复用 GrepTracer 的符号解析逻辑，避免重复实现
             String resolved = null;
-            if (symbol.contains(".")) {
-                String className = symbol.substring(0, symbol.lastIndexOf('.'));
-                for (com.devops.ai.core.crg.CrgModels.CrgNode node : candidates) {
-                    if (node.getQualifiedName() != null
-                            && node.getQualifiedName().contains(className + "." + methodName)) {
-                        resolved = node.getQualifiedName();
-                        break;
+            if (grepTracer != null) {
+                resolved = grepTracer.resolveSymbolToCrgTarget(symbol);
+            }
+            // fallback: GrepTracer 不可用时自己做简单解析
+            if (resolved == null && crgClient != null) {
+                String methodName = symbol.contains(".")
+                        ? symbol.substring(symbol.lastIndexOf('.') + 1)
+                        : symbol;
+                java.util.List<com.devops.ai.core.crg.CrgModels.CrgNode> candidates =
+                        crgClient.searchNodes(methodName, "Function", 5);
+                if (candidates != null && !candidates.isEmpty()) {
+                    if (symbol.contains(".")) {
+                        String className = symbol.substring(0, symbol.lastIndexOf('.'));
+                        for (com.devops.ai.core.crg.CrgModels.CrgNode node : candidates) {
+                            if (node.getQualifiedName() != null
+                                    && node.getQualifiedName().contains(className + "." + methodName)) {
+                                resolved = node.getQualifiedName();
+                                break;
+                            }
+                        }
+                    }
+                    if (resolved == null) {
+                        resolved = candidates.get(0).getQualifiedName();
                     }
                 }
-            }
-            if (resolved == null) {
-                resolved = candidates.get(0).getQualifiedName();
             }
             if (resolved == null) return null;
 
@@ -570,7 +577,7 @@ public class ReviewLlmService {
 
             return sb.toString();
         } catch (Exception e) {
-            log.debug("[CRG Phase 5] call chain context build failed for '{}': {}", symbol, e.getMessage());
+            log.debug("[CRG Review Context] call chain context build failed for '{}': {}", symbol, e.getMessage());
             return null;
         }
     }

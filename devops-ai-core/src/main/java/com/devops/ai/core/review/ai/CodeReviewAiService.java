@@ -942,7 +942,10 @@ public class CodeReviewAiService {
         boolean crgReady = false;
         if (crgClient != null && crgClient.isEnabled()) {
             try {
+                crgClient.clearQueryCache();  // 1.5 — 每次审查前清缓存
                 long t0 = System.currentTimeMillis();
+                // 3.4 — 用独立线程+超时保护，避免 CRG 服务挂起时阻塞主流程
+                // 默认 10 分钟，线上可通过 crg.build-max-wait-seconds 调整
                 crgClient.buildOrUpdateGraph(context.getRepoPath());
                 long elapsed = System.currentTimeMillis() - t0;
                 log.info("[CRG Layer 0] graph build/update completed in {}ms", elapsed);
@@ -962,27 +965,50 @@ public class CodeReviewAiService {
 
         // ================================================================
         // Layer 1: 模块级摘要 + Layer 2: 影响力过滤（并发注入）
+        // 3.2 — 并行化扩充循环，消除审查前的串行瓶颈
         // ================================================================
         if (crgReady) {
             long t0 = System.currentTimeMillis();
-            int enrichedCount = 0;
+            // 收集需要 enrich 的模块组
+            List<ReviewGroup> toEnrich = new ArrayList<>();
             for (ReviewGroup group : groups.values()) {
-                if (group.files.size() < 3) {
+                if (group.files.size() >= 3) {
+                    toEnrich.add(group);
+                } else {
                     log.info("[CRG Layer 1+2] module '{}': {} files (too small, skip enrichment)",
                             group.name, group.files.size());
-                    continue;
-                }
-                try {
-                    enrichGroupWithModuleSummary(group);
-                    enrichedCount++;
-                } catch (Exception e) {
-                    log.warn("[CRG Layer 1+2] module '{}': enrichment failed: {}",
-                            group.name, e.getMessage());
                 }
             }
+
+            if (!toEnrich.isEmpty()) {
+                int enrichConcurrency = Math.min(scanConcurrency, toEnrich.size());
+                ExecutorService enrichExecutor = Executors.newFixedThreadPool(enrichConcurrency);
+                List<CompletableFuture<Void>> enrichFutures = new ArrayList<>();
+                for (ReviewGroup group : toEnrich) {
+                    enrichFutures.add(CompletableFuture.runAsync(() -> {
+                        long tModule = System.currentTimeMillis();
+                        try {
+                            enrichGroupWithModuleSummary(group);
+                            long tElapsed = System.currentTimeMillis() - tModule;
+                            log.info("[CRG Layer 1+2] module '{}': enrichment done in {}ms", group.name, tElapsed);
+                        } catch (Exception e) {
+                            log.warn("[CRG Layer 1+2] module '{}': enrichment failed: {}", group.name, e.getMessage());
+                        }
+                    }, enrichExecutor));
+                }
+                try {
+                    CompletableFuture.allOf(
+                            enrichFutures.toArray(new CompletableFuture[0])).join();
+                } finally {
+                    enrichExecutor.shutdown();
+                }
+            }
+
             long elapsed = System.currentTimeMillis() - t0;
+            int enrichedCount = (int) toEnrich.stream()
+                    .filter(g -> g.crgModuleSummary != null).count();
             log.info("[CRG Layer 1+2] enrichment complete: {}/{} groups enriched in {}ms",
-                    enrichedCount, groups.size(), elapsed);
+                    enrichedCount, toEnrich.size(), elapsed);
         }
 
         ExecutorService executor = Executors.newFixedThreadPool(concurrency);
@@ -1086,29 +1112,41 @@ public class CodeReviewAiService {
                 classification.getReason(),
                 t2 - t1);
 
-        // 构建 FileDiff 分类映射
+        // 1.1 — 构建 FileDiff 分类映射（路径标准化，处理 CRG 路径与 FileDiff 路径格式差异）
         Map<String, FileDiff> fileMap = new LinkedHashMap<>();
+        Map<String, FileDiff> normalizedMap = new LinkedHashMap<>();  // 标准化 key
         for (FileDiff f : group.files) {
-            fileMap.put(f.getFilePath(), f);
+            String fp = f.getFilePath();
+            fileMap.put(fp, f);
+            // 用标准化路径做索引（去掉前缀、统一分隔符）
+            String normalized = normalizeFilePath(fp);
+            normalizedMap.put(normalized, f);
         }
 
         group.coreFiles = new ArrayList<>();
         for (String fp : classification.getCoreFiles()) {
+            // 先精确匹配、再标准化匹配
             FileDiff diff = fileMap.get(fp);
+            if (diff == null) {
+                diff = normalizedMap.get(normalizeFilePath(fp));
+            }
             if (diff != null) {
                 group.coreFiles.add(diff);
             } else {
-                log.warn("[CRG Layer 2] core file '{}' not found in fileMap (classification bug)", fp);
+                log.warn("[CRG Layer 2] core file '{}' not found in fileMap (CRG-to-FileDiff path mismatch)", fp);
             }
         }
 
         group.edgeFiles = new ArrayList<>();
         for (String fp : classification.getEdgeFiles()) {
             FileDiff diff = fileMap.get(fp);
+            if (diff == null) {
+                diff = normalizedMap.get(normalizeFilePath(fp));
+            }
             if (diff != null && !group.coreFiles.contains(diff)) {
                 group.edgeFiles.add(diff);
             } else if (diff == null) {
-                log.warn("[CRG Layer 2] edge file '{}' not found in fileMap (classification bug)", fp);
+                log.warn("[CRG Layer 2] edge file '{}' not found in fileMap (CRG-to-FileDiff path mismatch)", fp);
             }
         }
 
@@ -1364,42 +1402,43 @@ public class CodeReviewAiService {
         ExecutorService executor = Executors.newFixedThreadPool(concurrency);
         List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
 
-        for (int i = 0; i < chunks.size(); i++) {
-            final int chunkIdx = i;
-            final List<FileDiff> chunk = chunks.get(i);
-            final String otherSignatures = signatureCache.get(chunk);
-            futures.add(CompletableFuture.supplyAsync(() -> {
-                try {
-                    // 构建 chunk 级别的背景上下文
-                    String chunkBg = graphBg;
-                    if (otherSignatures != null && !otherSignatures.isEmpty()) {
-                        chunkBg += "\n\n## 本模块其他文件的类与方法概览\n\n" + otherSignatures
-                                + "\n请关注本批代码与上述其他文件的调用关系，重点排查运行时隐患（空指针、并发安全、资源泄漏、异常处理等），忽略编译级问题。\n";
+        try {
+            for (int i = 0; i < chunks.size(); i++) {
+                final int chunkIdx = i;
+                final List<FileDiff> chunk = chunks.get(i);
+                final String otherSignatures = signatureCache.get(chunk);
+                futures.add(CompletableFuture.supplyAsync(() -> {
+                    try {
+                        String chunkBg = graphBg;
+                        if (otherSignatures != null && !otherSignatures.isEmpty()) {
+                            chunkBg += "\n\n## 本模块其他文件的类与方法概览\n\n" + otherSignatures
+                                    + "\n请关注本批代码与上述其他文件的调用关系，重点排查运行时隐患（空指针、并发安全、资源泄漏、异常处理等），忽略编译级问题。\n";
+                        }
+                        ReviewGroup chunkGroup = new ReviewGroup(
+                                group.name + "#" + chunkIdx, chunk, chunkBg);
+                        List<Finding> findings = reviewDeepScanModuleIterative(chunkGroup, context);
+                        for (Finding f : findings) {
+                            f.setModuleName(group.name);
+                        }
+                        return findings;
+                    } catch (Exception e) {
+                        log.error("Deep scan module '{}' chunk {}/{} failed: {}",
+                                group.name, chunkIdx + 1, chunks.size(), e.getMessage());
+                        return Collections.<Finding>emptyList();
                     }
-                    // 每个 chunk 独立走迭代 grep
-                    ReviewGroup chunkGroup = new ReviewGroup(
-                            group.name + "#" + chunkIdx, chunk, chunkBg);
-                    List<Finding> findings = reviewDeepScanModuleIterative(chunkGroup, context);
-                    for (Finding f : findings) {
-                        f.setModuleName(group.name);
-                    }
-                    return findings;
-                } catch (Exception e) {
-                    log.error("Deep scan module '{}' chunk {}/{} failed: {}",
-                            group.name, chunkIdx + 1, chunks.size(), e.getMessage());
-                    return Collections.<Finding>emptyList();
-                }
-            }, executor));
-        }
+                }, executor));
+            }
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        executor.shutdown();
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        List<Finding> allFindings = new ArrayList<>();
-        for (CompletableFuture<List<Finding>> f : futures) {
-            allFindings.addAll(f.get());
+            List<Finding> allFindings = new ArrayList<>();
+            for (CompletableFuture<List<Finding>> f : futures) {
+                allFindings.addAll(f.get());
+            }
+            return allFindings;
+        } finally {
+            executor.shutdown();  // 1.3 — 确保 join 异常时也关闭执行器
         }
-        return allFindings;
     }
 
     /** 从 LLM JSON 响应解析 Finding 列表 */
@@ -2173,6 +2212,12 @@ public class CodeReviewAiService {
             }
         }
         return null;
+    }
+
+    /** 1.1 — 标准化文件路径（统一分隔符、去掉前缀差异），用于 CRG-to-FileDiff 匹配 */
+    private static String normalizeFilePath(String path) {
+        if (path == null) return "";
+        return path.replace('\\', '/');
     }
 
     private String truncate(String text, int maxLen) {

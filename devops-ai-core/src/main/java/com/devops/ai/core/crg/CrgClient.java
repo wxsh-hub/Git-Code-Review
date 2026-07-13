@@ -59,6 +59,9 @@ public class CrgClient {
     /** CRG 元数据 key */
     private static final String META_LAST_COMMIT = "last_commit";
 
+    /** 1.5 — 单次审查回合内的查询缓存，线程安全，避免同一 pattern+target 重复查询。 */
+    private final Map<String, CrgQueryResult> queryCache = Collections.synchronizedMap(new LinkedHashMap<>());
+
     private final CrgConfig config;
     private RestTemplate restTemplate;       // 查询类操作（短超时）
     private RestTemplate buildRestTemplate;  // 构建/后处理（长超时）
@@ -223,6 +226,14 @@ public class CrgClient {
     public CrgQueryResult queryGraph(String pattern, String target) {
         if (!isReady()) return null;
 
+        // 1.5 — 查询缓存
+        String cacheKey = pattern + ":" + target;
+        CrgQueryResult cached = queryCache.get(cacheKey);
+        if (cached != null) {
+            log.debug("CRG: queryGraph cache hit for '{}'", cacheKey);
+            return cached.hasResults() ? cached : null;
+        }
+
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("pattern", pattern);
@@ -233,14 +244,24 @@ public class CrgClient {
             if (resp == null || resp.isEmpty()) return null;
 
             CrgQueryResult result = MAPPER.readValue(resp, CrgQueryResult.class);
+            // 缓存即使空结果也存（空结果缓存不返回但避免重复 HTTP）
+            if (queryCache.size() < 200) {
+                queryCache.put(cacheKey, result);
+            }
             if (result.hasResults() || (result.getEdges() != null && !result.getEdges().isEmpty())) {
                 return result;
             }
-            return null;  // 空结果 → 让调用方 fallback
+            return null;
         } catch (Exception e) {
             log.warn("CRG: queryGraph({}, {}) failed: {}", pattern, target, e.getMessage());
             return null;
         }
+    }
+
+    /** 清除查询缓存（每次审查前调用） */
+    public void clearQueryCache() {
+        queryCache.clear();
+        log.debug("CRG: query cache cleared");
     }
 
     /**
@@ -302,41 +323,51 @@ public class CrgClient {
         try {
             // 1. 获取全局 Hub 节点 → 过滤为本模块的方法
             Map<String, Object> hubArgs = new LinkedHashMap<>();
-            hubArgs.put("top_n", config.getTopFaninMethods() * 2);  // 多取一些，过滤后可能不够
+            hubArgs.put("top_n", config.getTopFaninMethods() * 2);
             String hubResp = callTool(TOOL_HUB_NODES, hubArgs, restTemplate);
             if (hubResp != null && !hubResp.isEmpty()) {
                 JsonNode hubJson = MAPPER.readTree(hubResp);
                 List<CrgFanInMethod> allHub = parseFanInMethods(hubJson);
-                // 只保留文件在本模块内的
                 List<CrgFanInMethod> moduleHub = new ArrayList<>();
                 for (CrgFanInMethod m : allHub) {
                     if (m.getFile() != null && isFileInModule(m.getFile(), fileSet)) {
                         moduleHub.add(m);
                     }
                 }
-                // 截取 Top N
                 if (moduleHub.size() > config.getTopFaninMethods()) {
                     moduleHub = moduleHub.subList(0, config.getTopFaninMethods());
                 }
                 summary.setTopFanInMethods(moduleHub);
                 log.debug("CRG: module summary — {} hub methods in module ({} global)",
                         moduleHub.size(), allHub.size());
+            } else {
+                // 1.4 — hub 节点为空时记录 WARN，操作者可排查 CRG 是否部分降级
+                log.warn("CRG: module summary — no hub nodes returned (CRG service may be degraded)");
             }
 
-            // 2. 外部调用者：对每个 Hub 方法查 callers_of，过滤出模块外调用者
+            // 3.1 — 外部调用者：直接用 hub 方法的 qualified_name 结构批量查 callers_of
+            // 去掉 searchNodes 预处理（每天减少 5-25 次 HTTP 调用/模块）
             List<CrgExternalCaller> externalCallers = new ArrayList<>();
             int hubQueryLimit = Math.min(config.getMaxCallers(), summary.getTopFanInMethods().size());
             for (int i = 0; i < hubQueryLimit; i++) {
                 CrgFanInMethod m = summary.getTopFanInMethods().get(i);
-                // 从 CRG 查找 qualified_name 匹配 Function 节点
-                List<CrgNode> candidates = searchNodes(m.getName(), "Function", 5);
-                if (candidates == null || candidates.isEmpty()) continue;
-                for (CrgNode candidate : candidates) {
-                    if (candidate.getQualifiedName() == null) continue;
-                    CrgQueryResult callers = queryGraph("callers_of", candidate.getQualifiedName());
-                    if (callers == null || !callers.hasResults()) continue;
-                    for (CrgNode caller : callers.getResults()) {
-                        if (caller.getFile() != null && !fileSet.contains(caller.getFile())) {
+                if (m.getFile() == null) continue;
+
+                // 直接用 hub 节点的 file/name 构造 prefix 查找 callers_of
+                CrgQueryResult callers = queryGraph("file_summary", m.getFile());
+                if (callers == null || !callers.hasResults()) continue;
+
+                // 从 file_summary 结果中找到匹配的 Function qualified_name
+                for (CrgNode fn : callers.getResults()) {
+                    if (!"Function".equals(fn.getKind())) continue;
+                    String qn = fn.getQualifiedName();
+                    if (qn == null || !qn.contains(m.getName())) continue;
+
+                    CrgQueryResult funcCallers = queryGraph("callers_of", qn);
+                    if (funcCallers == null || !funcCallers.hasResults()) continue;
+
+                    for (CrgNode caller : funcCallers.getResults()) {
+                        if (caller.getFile() != null && !isFileInModule(caller.getFile(), fileSet)) {
                             CrgExternalCaller ec = new CrgExternalCaller();
                             String callerName = caller.getName() != null ? caller.getName()
                                     : (caller.getQualifiedName() != null ? caller.getQualifiedName() : "?");
