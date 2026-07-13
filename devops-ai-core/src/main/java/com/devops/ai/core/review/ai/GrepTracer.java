@@ -102,11 +102,30 @@ public class GrepTracer {
             log.debug("[GrepTracer] CRG not enabled, using original grep for '{}'", symbol);
         }
 
-        // === fallback：原逻辑 ===
+        // === fallback 1: 有 filePath 则直接读文件 ===
         if (filePath != null && !filePath.isEmpty()) {
-            return readFile(repoPath, filePath, symbol);
+            String result = readFile(repoPath, filePath, symbol);
+            if (result != null && !result.startsWith("(")) {
+                return result;
+            }
         }
-        return grepSearch(repoPath, symbol);
+
+        // === fallback 2: grep 全量 symbol（如 "PtmWpgjService.getBusinessTypeName"）===
+        String grepResult = grepSearch(repoPath, symbol);
+        if (grepResult != null && !grepResult.startsWith("(未找到")) {
+            return grepResult;
+        }
+
+        // === fallback 3 (W5): grep 仅方法名（去掉类名前缀）===
+        if (symbol.contains(".")) {
+            String methodName = symbol.substring(symbol.lastIndexOf('.') + 1);
+            if (!methodName.equals(symbol)) {  // 避免和 fallback 2 重复
+                log.debug("[GrepTracer] full symbol grep failed, retrying with method name '{}'", methodName);
+                return grepSearch(repoPath, methodName);
+            }
+        }
+
+        return grepResult;  // fallback 2 的原始结果（"(未找到匹配结果)"）
     }
 
     /**
@@ -150,18 +169,18 @@ public class GrepTracer {
     // ================================================================
 
     /**
-     * 通过 CRG 图查询获取符号信息。
+     * 通过 CRG 图查询获取符号信息（W5 优化 — 利用 CRG node 的 file_path 直接读取方法体）。
      * 返回 null 表示 CRG 无结果，需 fallback。
      */
     private String searchViaCrg(String repoPath, String symbol, String filePath) {
-        // B2 修复：符号解析
-        String resolvedTarget = resolveSymbolToCrgTarget(symbol);
-        if (resolvedTarget == null) {
+        // W5: 解析符号为完整 CrgNode（含 file_path + line_start）
+        CrgModels.CrgNode resolvedNode = resolveSymbolToCrgNode(symbol);
+        if (resolvedNode == null) {
             log.debug("[GrepTracer CRG] symbol '{}' could not be resolved to CRG target", symbol);
             return null;
         }
+        String resolvedTarget = resolvedNode.getQualifiedName();
 
-        // B1 修复: 符号解析成功即视为有效结果（即使无调用者/被调用者）
         StringBuilder sb = new StringBuilder();
         boolean hasCallers = false;
         boolean hasCallees = false;
@@ -173,7 +192,7 @@ public class GrepTracer {
                 hasCallers = true;
                 sb.append("### 调用者\n");
                 int count = 0;
-                int maxCallers = 5;  // 限制返回数，避免上下文字段过长
+                int maxCallers = 5;
                 for (CrgModels.CrgNode node : callers.getResults()) {
                     if (count >= maxCallers) {
                         sb.append("- ... 等共 ").append(callers.getResults().size()).append(" 个调用者\n");
@@ -234,10 +253,17 @@ public class GrepTracer {
             sb.append("\n### 被调用者: (查询失败)\n");
         }
 
-        // 3. 读取方法体（仅在有 filePath 时）
+        // 3. W5: 读取方法体 — 优先用 CRG node 的 file_path（无需 LLM 提供）
+        String effectiveFilePath = null;
         if (filePath != null && !filePath.isEmpty()) {
+            effectiveFilePath = filePath;
+        } else if (resolvedNode.getFile() != null) {
+            // CRG node 有 file_path：转为相对路径
+            effectiveFilePath = toRelativePath(repoPath, resolvedNode.getFile());
+        }
+        if (effectiveFilePath != null) {
             try {
-                String body = readFile(repoPath, filePath, symbol);
+                String body = readFile(repoPath, effectiveFilePath, symbol);
                 if (body != null && !body.startsWith("(")) {
                     sb.append("\n### 方法体\n```java\n").append(body).append("\n```\n");
                 }
@@ -247,27 +273,57 @@ public class GrepTracer {
         }
 
         log.debug("[GrepTracer CRG] '{}': resolved, callers={}, callees={}, body={}",
-                symbol, hasCallers, hasCallees, filePath != null);
+                symbol, hasCallers, hasCallees, effectiveFilePath != null);
         return sb.toString();
+    }
+
+    /**
+     * W5 新增 — 将 CRG node 的绝对路径转为相对于 repoPath 的相对路径。
+     */
+    private String toRelativePath(String repoPath, String absolutePath) {
+        if (absolutePath == null) return null;
+        // 标准化路径分隔符
+        String normalizedRepo = repoPath.replace('\\', '/');
+        String normalizedPath = absolutePath.replace('\\', '/');
+        if (normalizedPath.startsWith(normalizedRepo)) {
+            String rel = normalizedPath.substring(normalizedRepo.length());
+            while (rel.startsWith("/") || rel.startsWith("\\")) {
+                rel = rel.substring(1);
+            }
+            return rel;
+        }
+        // 不是 repoPath 前缀 → 无法定位文件，返回 null 让调用方跳过 readFile
+        log.debug("[GrepTracer CRG] path '{}' not under repoPath '{}', skipping method body read",
+                normalizedPath, normalizedRepo);
+        return null;
     }
 
     /**
      * 将 LLM 输出的 "ClassName.methodName" 映射到 CRG qualified_name。
      *
-     * <p>B2 修复 — 策略：
+     * <p>W5 修复 — 多策略匹配：
      * <ol>
-     *   <li>通过 CRG searchNodes 查找 name 匹配且 parent_name 包含类名的 Function 节点</li>
-     *   <li>有类名限定时精确匹配，无类名时返回第一个候选</li>
+     *   <li>通过 CRG searchNodes 查找 name 匹配的 Function 节点</li>
+     *   <li>有类名限定时：endsWith 精确匹配 > contains 模糊匹配 > 按 priority 评分</li>
+     *   <li>无类名时返回第一个候选</li>
      *   <li>解析失败返回 null（调用方应 fallback 到 shell grep）</li>
      * </ol>
      *
      * <p>本方法设为 public，供 FindingVerifier 等外部调用者复用。
      *
      * @param symbol LLM 输出的符号名（如 "UserRepository.findById" 或 "findById"）
-     * @return CRG qualified_name（如 "D:\\path\\to\\file.java::UserRepository.findById"），
-     *         解析失败返回 null
+     * @return CRG qualified_name，解析失败返回 null
      */
     public String resolveSymbolToCrgTarget(String symbol) {
+        CrgModels.CrgNode node = resolveSymbolToCrgNode(symbol);
+        return node != null ? node.getQualifiedName() : null;
+    }
+
+    /**
+     * W5 新增 — 解析符号返回完整 CrgNode（含 file_path + line_start），
+     * 使 searchViaCrg 可直接读取方法体而无需 LLM 提供文件路径。
+     */
+    private CrgModels.CrgNode resolveSymbolToCrgNode(String symbol) {
         if (symbol == null || symbol.isEmpty()) return null;
         if (crgClient == null || !crgClient.isEnabled()) return null;
 
@@ -285,7 +341,7 @@ public class GrepTracer {
         // 通过 CRG searchNodes 查找
         List<CrgModels.CrgNode> candidates;
         try {
-            candidates = crgClient.searchNodes(methodName, "Function", 10);
+            candidates = crgClient.searchNodes(methodName, "Function", 15);
         } catch (Exception e) {
             log.debug("[GrepTracer CRG] searchNodes('{}') failed: {}", methodName, e.getMessage());
             return null;
@@ -296,25 +352,42 @@ public class GrepTracer {
             return null;
         }
 
-        // 有类名限定时精确匹配
+        // 有类名限定时精确匹配（W5: 多策略）
         if (className != null) {
+            String needle = className + "." + methodName;
+
+            // 策略1：endsWith 精确匹配（qualified_name 以 "ClassName.methodName" 结尾）
             for (CrgModels.CrgNode node : candidates) {
                 String qn = node.getQualifiedName();
-                if (qn != null && qn.contains(className + "." + methodName)) {
-                    log.debug("[GrepTracer CRG] '{}' -> '{}' (exact match)", symbol, qn);
-                    return qn;
+                if (qn != null && qn.endsWith(needle)) {
+                    log.debug("[GrepTracer CRG] '{}' -> '{}' (endsWith exact match)", symbol, qn);
+                    return node;
                 }
             }
-            // 类名未匹配，返回 null 而非瞎猜—调用方 fallback 到 grep
+
+            // 策略2：同名方法 + 文件名中包含类名（处理类名不精确的情况）
+            for (CrgModels.CrgNode node : candidates) {
+                String qn = node.getQualifiedName();
+                if (qn != null && qn.contains("." + methodName)) {
+                    // 检查文件路径或 qualified_name 中是否包含类名
+                    if ((node.getFile() != null && node.getFile().contains(className))
+                            || qn.contains(className)) {
+                        log.debug("[GrepTracer CRG] '{}' -> '{}' (file/name contains class name)", symbol, qn);
+                        return node;
+                    }
+                }
+            }
+
+            // 无类名匹配，返回 null 而非瞎猜—调用方 fallback 到 grep
             log.debug("[GrepTracer CRG] '{}' class '{}' not matched in {} candidates, fallback to grep",
                     symbol, className, candidates.size());
             return null;
         }
 
         // 无类名限定，返回第一个候选
-        String qn = candidates.get(0).getQualifiedName();
-        log.debug("[GrepTracer CRG] '{}' -> '{}' (no class name, first match)", symbol, qn);
-        return qn;
+        CrgModels.CrgNode first = candidates.get(0);
+        log.debug("[GrepTracer CRG] '{}' -> '{}' (no class name, first match)", symbol, first.getQualifiedName());
+        return first;
     }
 
     // ================================================================
@@ -366,8 +439,21 @@ public class GrepTracer {
             }
 
             if (methodStartLines.isEmpty()) {
+                // W5: 方法未在该文件中找到，回退到 grep（先全量 symbol，再仅方法名）
                 log.debug("[GrepTracer] method '{}' not found in {}, falling back to grep", symbol, filePath);
-                return grepSearch(repoPath, symbol);
+                String grepResult = grepSearch(repoPath, symbol);
+                if (grepResult != null && !grepResult.startsWith("(未找到") && !grepResult.startsWith("(grep")) {
+                    return grepResult;
+                }
+                // 提取方法名重试
+                String methodPart = symbol.contains(".")
+                        ? symbol.substring(symbol.lastIndexOf('.') + 1)
+                        : symbol;
+                if (!methodPart.equals(symbol)) {
+                    log.debug("[GrepTracer] retrying grep with method name '{}'", methodPart);
+                    return grepSearch(repoPath, methodPart);
+                }
+                return grepResult;
             }
 
             // 对每个匹配的方法，提取完整方法体
