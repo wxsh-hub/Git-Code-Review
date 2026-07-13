@@ -309,9 +309,11 @@ public class ReviewReportGenerator {
 
             // P3/P4: compact multi-line display
             if (s.ordinal() >= FindingSeverity.LOW.ordinal()) {
+                int ds = Math.min(f.getStartLine(), f.getEndLine());
+                int de = Math.max(f.getStartLine(), f.getEndLine());
                 sb.append("- **").append(s.getLevel()).append("-").append(sevIdx).append("** `")
                         .append(f.getFile() != null ? f.getFile() : "-").append("`")
-                        .append(" 第").append(f.getStartLine()).append("-").append(f.getEndLine()).append("行")
+                        .append(" 第").append(ds).append("-").append(de).append("行")
                         .append(" — ").append(f.getCategory() != null ? f.getCategory().getLabel() : "其他");
                 // 问题描述（content/trigger）
                 if (f.getTrigger() != null && !f.getTrigger().isEmpty()) {
@@ -336,13 +338,15 @@ public class ReviewReportGenerator {
             String codeLink = buildCodeLink(context.getGitRemoteUrl(), context.getBranch(),
                     f.getFile(), f.getStartLine(), f.getEndLine());
             String categoryLabel = f.getCategory() != null ? f.getCategory().getLabel() : "其他";
+            int ts = Math.min(f.getStartLine(), f.getEndLine());
+            int te = Math.max(f.getStartLine(), f.getEndLine());
             sb.append("**").append(s.getLevel()).append("-").append(sevIdx).append("** ");
             if (codeLink != null) {
-                sb.append("[").append(f.getFile()).append(" 第").append(f.getStartLine())
-                        .append("-").append(f.getEndLine()).append("行](").append(codeLink).append(")");
+                sb.append("[").append(f.getFile()).append(" 第").append(ts)
+                        .append("-").append(te).append("行](").append(codeLink).append(")");
             } else {
-                sb.append("`").append(f.getFile()).append("` 第").append(f.getStartLine())
-                        .append("-").append(f.getEndLine()).append("行");
+                sb.append("`").append(f.getFile()).append("` 第").append(ts)
+                        .append("-").append(te).append("行");
             }
             sb.append(" — ").append(categoryLabel).append("\n\n");
 
@@ -395,6 +399,10 @@ public class ReviewReportGenerator {
                          int startLine, int endLine) {
         if (gitRemoteUrl == null || branch == null || filePath == null) return null;
 
+        // 防御：LLM 可能输出颠倒的行号，显示前先归一化
+        int displayStart = Math.min(startLine, endLine);
+        int displayEnd = Math.max(startLine, endLine);
+
         // 标准化 URL：去掉 .git 后缀和协议前缀
         String url = gitRemoteUrl.replaceAll("\\.git$", "");
         url = url.replaceAll("^https?://", "").replaceAll("^git@", "").replace(":", "/");
@@ -410,7 +418,7 @@ public class ReviewReportGenerator {
             blobFormat = "https://" + host + "/" + projectPath + "/-/blob/" + branch + "/" + filePath;
         }
 
-        return blobFormat + "#L" + startLine + (endLine > startLine ? "-L" + endLine : "");
+        return blobFormat + "#L" + displayStart + (displayEnd > displayStart ? "-L" + displayEnd : "");
     }
 
     /** 计算截止时间：P0="立即", P1=审查日期+3工作日, P2=审查日期+7工作日 */

@@ -631,15 +631,18 @@ public class CodeReviewAiService {
         sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
         sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
         sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？\n");
+        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？注解放错位置导致功能不生效（如 @DS/@Transactional/@Cacheable 放在接口而非实现类、@Async 无代理调用）？\n");
         sb.append("~~COMPILE_ERROR - 编译错误~~ → **跳过**（见上方「编译错误跳过规则」）\n\n");
         sb.append("P2 中危（注意检查）：\n");
         sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？是否有不必要的对象创建？字符串拼接是否用 StringBuilder？\n");
         sb.append("□ DEPENDENCY - 依赖：是否引用了 SNAPSHOT/过期/有已知漏洞的版本？是否有未使用的 import？\n\n");
         sb.append("P3 低危（顺带指出）：\n");
         sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径、未提取常量？\n");
-        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？\n");
+        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？不会导致实际 bug 但不规范、不优雅的写法也归入此类。\n");
         sb.append("□ DEAD_CODE - 冗余/死代码：定义了但从未调用的方法/变量？永远不执行的分支（if(false)/return后的代码）？重复代码块？不必要的 import？\n\n");
+        sb.append("**自相矛盾过滤规则（必须遵守）**：\n");
+        sb.append("- 如果你在 content 或 trigger 中写了「不会抛异常」「不会触发 NPE」「实际不会有问题」等自我否认的描述，说明这不是真正的问题，**不要报告此 finding**\n");
+        sb.append("- 发现写法不规范但不会产生实际 bug 的情况 → 归类为 CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度\n\n");
         sb.append("**evidence 字段要求（必须遵守）**：\n");
         sb.append("- existingCode 必须是 diff 中对应的**实际源码**，从 ```diff 代码块中复制，不要自己编造或概括\n");
         sb.append("- 如果涉及多行代码，完整复制，太长时可以在非关键部分用 \"... [省略中间N行] ...\" 代替\n");
@@ -1683,7 +1686,7 @@ public class CodeReviewAiService {
         sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
         sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return 语句（会吞掉异常）？\n");
         sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO（应经过 Service）？工具类有无状态？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？\n");
+        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值（null/空集合/0/负数）是否处理？equals/hashCode 是否成对重写？BigDecimal 是否用了 new BigDecimal(double)（精度丢失）？注解放错位置导致功能不生效（如 @DS/@Transactional/@Cacheable 放在接口而非实现类、@Async 无代理调用）？\n");
         sb.append("~~COMPILE_ERROR - 编译错误~~ → **跳过**（见上方「编译错误跳过规则」）\n\n");
 
         // P2 中危
@@ -1694,8 +1697,13 @@ public class CodeReviewAiService {
         // P3 低危
         sb.append("P3 低危（顺带指出）：\n");
         sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径、未提取常量？\n");
-        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？\n");
+        sb.append("□ CODE_STYLE - 代码风格：命名不规范、缺少必要注释、GET 请求执行写操作（非RESTful）？不会导致实际 bug 但不规范、不优雅的写法也归入此类。\n");
         sb.append("□ DEAD_CODE - 冗余/死代码：定义了但从未调用的方法/变量？永远不执行的分支（if(false)/return后的代码）？重复代码块？不必要的 import？\n\n");
+
+        // 自相矛盾过滤规则
+        sb.append("**自相矛盾过滤规则（必须遵守）**：\n");
+        sb.append("- 如果你在 content 或 trigger 中写了「不会抛异常」「不会触发 NPE」「实际不会有问题」等自我否认的描述，说明这不是真正的问题，**不要报告此 finding**\n");
+        sb.append("- 发现写法不规范但不会产生实际 bug 的情况 → 归类为 CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度\n\n");
 
         // evidence 要求
         sb.append("**evidence 字段要求（必须遵守）**：\n");
@@ -2508,7 +2516,7 @@ public class CodeReviewAiService {
         sb.append("□ RESOURCE_LEAK - 资源泄漏：Stream/Connection/IO流是否在 finally 或 try-with-resources 中关闭？\n");
         sb.append("□ ERROR_HANDLING - 异常处理：catch 块是否为空？是否吞异常不记录？finally 块中是否有 return？\n");
         sb.append("□ ARCHITECTURE - 架构：是否存在循环依赖？Controller 直接调 DAO？\n");
-        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值是否处理？equals/hashCode 是否成对？BigDecimal 精度？MyBatis XML 中同名 select/insert/update/delete id 重复？\n\n");
+        sb.append("□ LOGIC_ERROR - 逻辑错误：条件判断/计算逻辑是否有误？边界值是否处理？equals/hashCode 是否成对？BigDecimal 精度？MyBatis XML 中同名 select/insert/update/delete id 重复？注解放错位置导致功能不生效（如 @DS/@Transactional/@Cacheable 放在接口而非实现类）？\n\n");
 
         sb.append("P2 中危（注意检查）：\n");
         sb.append("□ PERFORMANCE - 性能：循环内是否有数据库调用（N+1）？字符串拼接是否用 StringBuilder？\n");
@@ -2516,8 +2524,13 @@ public class CodeReviewAiService {
 
         sb.append("P3 低危（顺带指出）：\n");
         sb.append("□ HARDCODED - 硬编码：魔法数字、写死的配置值/URL/路径？\n");
-        sb.append("□ CODE_STYLE - 代码风格：命名不规范、GET 请求执行写操作？\n");
+        sb.append("□ CODE_STYLE - 代码风格：命名不规范、GET 请求执行写操作？不会导致实际 bug 但不规范、不优雅的写法也归入此类。\n");
         sb.append("□ DEAD_CODE - 冗余/死代码：未调用的方法/变量？永远不执行的分支？\n\n");
+
+        // 自相矛盾过滤规则
+        sb.append("**自相矛盾过滤规则（必须遵守）**：\n");
+        sb.append("- 如果你在 content 或 trigger 中写了「不会抛异常」「不会触发 NPE」「实际不会有问题」等自我否认的描述，说明这不是真正的问题，**不要报告此 finding**\n");
+        sb.append("- 发现写法不规范但不会产生实际 bug 的情况 → 归类为 CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR 等更高严重度\n\n");
 
         // 严重度校准
         sb.append("## 严重度校准（必须遵守）\n");

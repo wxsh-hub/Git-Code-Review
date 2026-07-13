@@ -123,7 +123,7 @@ public class FindingVerifier {
      * 检查行号合法性，并尝试用 evidence 修正行号：
      * <ul>
      *   <li>startLine ≤ 0 → 拒绝</li>
-     *   <li>endLine < startLine → 自动修正 endLine = startLine</li>
+     *   <li>startLine > endLine（LLM 输出颠倒）→ 自动交换 startLine 和 endLine</li>
      *   <li>startLine > 文件总行数 → 尝试用 evidence 搜索修正，失败则拒绝</li>
      *   <li>行号在范围内但偏差较大 → 尝试用 evidence 搜索修正</li>
      * </ul>
@@ -137,11 +137,13 @@ public class FindingVerifier {
                 result.reject(f);
                 continue;
             }
-            // endLine < startLine → 自动修正
-            if (f.getEndLine() < f.getStartLine()) {
-                log.info("Finding auto-corrected: endLine={} → startLine={} for file={}",
-                        f.getEndLine(), f.getStartLine(), f.getFile());
-                f.setEndLine(f.getStartLine());
+            // startLine > endLine（LLM 输出颠倒）→ 交换二者
+            if (f.getStartLine() > f.getEndLine()) {
+                log.info("Finding line swapped: {}:{}-{} → {}-{}",
+                        f.getFile(), f.getStartLine(), f.getEndLine(), f.getEndLine(), f.getStartLine());
+                int tmp = f.getStartLine();
+                f.setStartLine(f.getEndLine());
+                f.setEndLine(tmp);
             }
             // 读取文件检查行号上界
             int totalLines = countFileLines(repoPath, f.getFile());
