@@ -1537,7 +1537,9 @@ public class CodeReviewAiService {
         sb.append("- 代码能构建部署说明无编译错误 → 不要报类型不匹配/签名不对/缺引号/注解误用等\n");
         sb.append("- 心想「可能」「也许」「建议检查」→ 直接跳过，只有代码中能确证的问题才报\n");
         sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除此 finding\n");
-        sb.append("- 不会产生 bug 的不规范写法 → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR\n\n");
+        sb.append("- 不会产生 bug 的不规范写法 → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR\n");
+        sb.append("- **行号从第 1 行开始计数**，大文件截断后不要从截断点重新编号\n");
+        sb.append("- **必须检查所在方法/类的注解**（@Transactional/@Async/@Cacheable/@DS/@Scheduled 等），不要只看代码片段\n\n");
 
         // ===== S2: 分类优先级 =====
         sb.append("### 分类优先级\n");
@@ -1549,7 +1551,7 @@ public class CodeReviewAiService {
         sb.append("**P0 阻断**：\n");
         sb.append("- SECURITY：SQL注入（${}拼接）、XSS、权限绕过、反序列化、SSRF、路径穿越、XXE\n");
         sb.append("- SECRET_EXPOSURE：Java 代码中硬编码密码/Token/密钥（配置文件中的不算）\n");
-        sb.append("- TRANSACTION：写操作缺少 @Transactional\n\n");
+        sb.append("- TRANSACTION：写操作缺少 @Transactional（注意：MyBatis-Plus 的 saveBatch/removeByIds 等方法内置单次SQL，不需要外层事务）\n\n");
 
         sb.append("**P1 高危**：\n");
         sb.append("- NPE：返回值/参数/集合元素未判空；Optional.get() 无保护\n");
@@ -1594,6 +1596,7 @@ public class CodeReviewAiService {
         sb.append(", \"endLine\": 行号, \"thinking\": \"...\"}]}\n");
         sb.append("没有问题则 {\"comments\": []}\n");
         sb.append("category 取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
+        sb.append("每个 finding 只报告一个问题，不要用 --- 或换行合并多个问题到一个 finding 中。\n");
         sb.append("每个 comment 必须包含 path、category、content、startLine、endLine 字段。只输出 JSON，不要有其他文字。\n");
     }
 
@@ -2305,43 +2308,35 @@ public class CodeReviewAiService {
         sb.append("  \"done\": false\n");
         sb.append("}\n\n");
 
-        // grep 使用规则
+        // grep 使用规则（含硬规则，合并版本）
         sb.append("## grep 使用规则\n");
-        sb.append("- 如果你发现问题可疑但不确定（例如：不确定某个值是否可被外部控制、不确定某个方法是否有副作用），\n");
-        sb.append("  **必须**先通过 grep_requests 查看相关代码再下结论，不要在 confirmed 中输出猜测性判断\n");
-        sb.append("- grep_requests 输出你需要查看外部代码才能确认的可疑点\n");
-        sb.append("  - symbol：类名.方法名（如 UserRepository.findById），所有重载版本都会返回\n");
-        sb.append("  - file：可选，如果知道文件路径填写后会直接读取该文件的方法体（含注解和 JavaDoc）\n");
-        sb.append("  - 无 file 时会全局 grep 搜索该符号\n");
-        sb.append("  - 每轮最多 ").append(maxGrepPerRound).append(" 个 grep_requests\n");
-        sb.append("- done=true 表示审查完毕，不需要更多上下文\n");
-        sb.append("- 如果你确定没有问题，confirmed 输出空数组，done=true\n");
-        sb.append("- **每个 finding 只报告一个问题**，不要用 --- 或换行合并多个问题到一个 finding 中\n\n");
+        sb.append("- 不确定 → **必须**先通过 grep_requests 查看相关代码再下结论，不要猜测\n");
+        sb.append("- grep_requests 每轮最多 ").append(maxGrepPerRound).append(" 个，symbol 填 类名.方法名（如 UserRepository.findById）\n");
+        sb.append("  - file 可选，填了会直接读取该方法体（含注解和 JavaDoc）\n");
+        sb.append("  - 不填 file 会全局 grep 搜索该符号的所有重载\n");
+        sb.append("- done=true 表示审查完毕；确定没问题则 confirmed=[] 且 done=true\n");
+        sb.append("- 每个 finding 只报告一个问题\n\n");
+        sb.append("**以下类型必须先 grep 确认再输出**：\n");
+        sb.append("1. **事务缺失** — 必须先确认：不是 MyBatis-Plus 内置方法、循环体操作确实需同一事务\n");
+        sb.append("2. **并发问题** — 必须先确认：变量是类字段而非局部变量、确实有多线程场景\n");
+        sb.append("3. **资源泄漏** — 必须先确认：无 try-with-resources 且无框架自动关闭（Hutool HttpRequest 自动管理连接）\n");
+        sb.append("无法 grep 确认 → confidence ≤ 0.60\n\n");
 
-        // 必须 grep 硬规则
-        sb.append("## 必须 grep 硬规则（违反则该 finding 作废）\n");
-        sb.append("以下类型的问题，如果你没有通过 grep 看到方法的**完整实现**（包括循环体、后续操作、方法注解），\n");
-        sb.append("**禁止**直接报到 confirmed，必须先用 grep_requests 确认：\n");
-        sb.append("1. **事务缺失** — 必须先确认：\n");
-        sb.append("   - 该方法不是框架内置方法（MyBatis-Plus 的 removeByIds/saveBatch/updateBatchById/removeBatchByIds 底层是单次SQL，不需要事务）\n");
-        sb.append("   - 循环体内的每一步操作确实需要在同一事务中（逐行处理+catch的批处理模式不应包事务）\n");
-        sb.append("2. **并发问题** — 必须先确认：\n");
-        sb.append("   - 变量是共享可变的（类字段/static），而不是方法内局部变量\n");
-        sb.append("   - 确实存在多线程同时访问的场景\n");
-        sb.append("3. **资源泄漏** — 必须先确认：\n");
-        sb.append("   - 没有 try-with-resources 或框架自动关闭机制（如 Hutool HttpRequest 自动管理连接）\n");
-        sb.append("   - 资源确实被创建后未关闭\n");
-        sb.append("如果你无法 grep 确认（如超出轮次限制），该 finding 的 confidence 必须 ≤ 0.60\n\n");
+        // 全量模式 + 不要报告规则（合并）
+        sb.append("## ⛔ 不要报告的情况\n");
+        sb.append("- 你看到的是模块完整源码，可跨文件分析，但**看不到其他模块** → 不要报「类/Bean/方法不存在」\n");
+        sb.append("- 类型不匹配/签名不对/缺引号 → 能部署说明无编译错误\n");
+        sb.append("- pom.xml/properties/yml → 部署配置，不要报\n");
+        sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除\n");
+        sb.append("- 不规范但不会产生 bug → CODE_STYLE + LOW，不要归为 NPE/LOGIC_ERROR 等更高严重度\n");
+        sb.append("- **行号从第 1 行开始计数**，截断后不从截断点重新编号\n");
+        sb.append("- **必须检查所在方法/类的注解**（@Transactional/@Async/@Cacheable/@DS/@Scheduled 等），不要只看代码片段\n");
+        sb.append("- 字段有默认值（`Boolean x = true`）→ 不要报 NPE，反序列化时默认值会生效\n\n");
 
-        // 全量模式注意事项
-        sb.append("## 全量扫描模式说明\n");
-        sb.append("- 你看到的是模块内文件的完整源码（非 diff），请基于完整代码上下文审查\n");
-        sb.append("- 你可以看到本模块内所有文件，跨文件调用关系可以完整分析\n");
-        sb.append("- 你**看不到其他模块的代码** — 如果 @Autowired 的 bean 定义在其他模块，不要报「bean 不存在」\n");
-        sb.append("- 如果 import 了其他模块的类但看不到其源码，这是正常的，不要报「类不存在」\n");
-        sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n");
-        sb.append("- **行号必须是源文件的原始行号**，文件可能被截断，但行号从第 1 行开始计数，不要从截断点重新计数\n");
-        sb.append("- **审查代码时必须检查所在方法/类的注解**（如 @Transactional、@Async、@Cacheable、@Scheduled 等），不要只看代码片段本身\n\n");
+        // 置信度
+        sb.append("## 置信度\n");
+        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70 且必须先 grep\n");
+        sb.append("- 猜测性判断（含「若」「可能」「假设」）→ 不要报\n\n");
 
         // B3 修复 — CRG 使用指南
         sb.append("## 代码结构分析（CRG）\n");
@@ -2357,21 +2352,12 @@ public class CodeReviewAiService {
         sb.append("2. 对可疑方法发 grep 请求，系统会返回调用链，帮你判断影响范围\n");
         sb.append("3. 如果发现跨模块调用，重点关注事务一致性和异常传播\n\n");
 
-        // 编译错误 + 不要报告规则（最高优先级）
-        sb.append("## ⛔ 不要报告的情况\n");
-        sb.append("- 跨模块引用看不到 → 正常，不要报「类/Bean/方法不存在」\n");
-        sb.append("- 类型不匹配/签名不对/缺引号 → 编译错误，能部署说明不存在\n");
-        sb.append("- pom.xml/properties/yml → 不要报（部署配置问题）\n");
-        sb.append("- 不确定 → 用 grep_requests 确认后再报，不要猜测\n");
-        sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除\n");
-        sb.append("- 不规范但不会产生 bug → CODE_STYLE + LOW，不要报成 NPE/LOGIC_ERROR 等\n\n");
-
         // 审查清单
         sb.append("## 审查清单\n\n");
         sb.append("分类优先级：`SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK > ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE > DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER`\n");
         sb.append("举例：@DS 在接口上不生效 → LOGIC_ERROR（不是 CODE_STYLE）；硬编码密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
 
-        sb.append("**P0**：SECURITY（SQL注入/${}拼接/XSS/权限绕过/反序列化/SSRF/路径穿越）、TRANSACTION（写操作缺 @Transactional）、SECRET_EXPOSURE（Java 代码中硬编码密码/Token/密钥，配置文件中的不算）\n\n");
+        sb.append("**P0**：SECURITY（SQL注入/${}拼接/XSS/权限绕过/反序列化/SSRF/路径穿越）、TRANSACTION（写操作缺 @Transactional，注意 MyBatis-Plus 内置方法不需要外层事务）、SECRET_EXPOSURE（Java 代码中硬编码密码/Token/密钥，配置文件中的不算）\n\n");
 
         sb.append("**P1**：NPE（未判空就使用）、CONCURRENCY（共享变量无线程安全、HashMap 误用）、RESOURCE_LEAK（未 try-with-resources 关闭）、ERROR_HANDLING（空 catch/吞异常/finally 中 return）、ARCHITECTURE（循环依赖/Controller 直接调 DAO）、LOGIC_ERROR（条件错误/边界未处理/注解放错位置不生效）\n\n");
 
@@ -2379,10 +2365,9 @@ public class CodeReviewAiService {
 
         sb.append("**P3**：HARDCODED（魔法数字/写死配置）、CODE_STYLE（命名/GET 写操作/不规范但不产生 bug）、DEAD_CODE（未使用/永不执行）\n\n");
 
-        // 严重度校准
+        // 严重度校准（仅保留未被「不要报告」覆盖的内容）
         sb.append("## 严重度校准\n");
         sb.append("- GET 执行写操作 → CODE_STYLE + LOW，除非有实际注入/越权\n");
-        sb.append("- 字段有默认值（`Boolean x = true`）→ 不要报 NPE\n");
         sb.append("- 只有实际可利用的攻击（SQL注入/XSS/SSRF等）才归 SECURITY\n\n");
 
         // evidence 要求
@@ -2393,12 +2378,7 @@ public class CodeReviewAiService {
         // severity/category 说明
         sb.append("severity 取值：BLOCKER, HIGH, MEDIUM, LOW\n");
         sb.append("category 取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
-        sb.append("severity 和 category 是独立字段，不要混淆。category 不能填 \"P0 BLOCKER\"\n\n");
-
-        // 置信度
-        sb.append("## 置信度\n");
-        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70 且必须先 grep\n");
-        sb.append("- 猜测性判断（含「若」「可能」「假设」）→ 不要报，先 grep\n");
+        sb.append("severity 和 category 是独立字段，不要混淆。category 不能填 \"P0 BLOCKER\"\n");
 
         return sb.toString();
     }
