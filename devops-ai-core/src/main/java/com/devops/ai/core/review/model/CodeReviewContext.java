@@ -25,6 +25,9 @@ public class CodeReviewContext {
     private Date reviewDate;                // 审查日期（Phase 8 用于截止时间计算）
     private boolean useOcrDeepScan;         // 是否启用 OCR 深度扫描（code_scan 逐文件审查全部内容）
 
+    // --- CRG 集成（Phase 2） ---
+    private Object crgGlobalSummary;        // CrgModels.CrgGlobalSummary，全局摘要（~576 tokens）
+
     public String getProjectName() { return projectName; }
     public void setProjectName(String projectName) { this.projectName = projectName; }
     public String getProjectVersion() { return projectVersion; }
@@ -59,4 +62,8 @@ public class CodeReviewContext {
     public void setReviewDate(Date reviewDate) { this.reviewDate = reviewDate; }
     public boolean isUseOcrDeepScan() { return useOcrDeepScan; }
     public void setUseOcrDeepScan(boolean useOcrDeepScan) { this.useOcrDeepScan = useOcrDeepScan; }
+
+    // --- CRG 集成（Phase 2） getter/setter ---
+    public Object getCrgGlobalSummary() { return crgGlobalSummary; }
+    public void setCrgGlobalSummary(Object crgGlobalSummary) { this.crgGlobalSummary = crgGlobalSummary; }
 }

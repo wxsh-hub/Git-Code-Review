@@ -54,6 +54,7 @@ public class CrgClient {
     private static final String TOOL_HUB_NODES = "get_hub_nodes_tool";
     private static final String TOOL_MINIMAL_CONTEXT = "get_minimal_context_tool";
     private static final String TOOL_GRAPH_STATS = "list_graph_stats_tool";
+    private static final String TOOL_IMPACT_RADIUS = "get_impact_radius_tool";
 
     /** CRG 元数据 key */
     private static final String META_LAST_COMMIT = "last_commit";
@@ -269,6 +270,345 @@ public class CrgClient {
             log.warn("CRG: searchNodes({}, {}) failed: {}", query, kind, e.getMessage());
             return null;
         }
+    }
+
+    // ================================================================
+    // Layer 1: 模块级摘要
+    // ================================================================
+
+    /**
+     * 获取模块级摘要（~500 tokens/模块）。
+     *
+     * <p>与 {@link #getGlobalSummary()} 不同，此方法过滤为只包含本模块相关数据：
+     * <ul>
+     *   <li>高扇入方法 — 仅本模块内的</li>
+     *   <li>执行流 — 仅流经本模块的</li>
+     *   <li>外部调用者 — 谁从模块外调用本模块方法</li>
+     * </ul>
+     *
+     * @param moduleFilePaths 模块内文件路径列表
+     * @return 模块级摘要，CRG 不可用时返回 null
+     */
+    public CrgModuleSummary getModuleSummary(List<String> moduleFilePaths) {
+        if (!isReady()) return null;
+        long t0 = System.currentTimeMillis();
+
+        CrgModuleSummary summary = new CrgModuleSummary();
+        summary.setTotalFiles(moduleFilePaths.size());
+
+        // 构建文件路径集合用于快速过滤
+        Set<String> fileSet = new LinkedHashSet<>(moduleFilePaths);
+
+        try {
+            // 1. 获取全局 Hub 节点 → 过滤为本模块的方法
+            Map<String, Object> hubArgs = new LinkedHashMap<>();
+            hubArgs.put("top_n", config.getTopFaninMethods() * 2);  // 多取一些，过滤后可能不够
+            String hubResp = callTool(TOOL_HUB_NODES, hubArgs, restTemplate);
+            if (hubResp != null && !hubResp.isEmpty()) {
+                JsonNode hubJson = MAPPER.readTree(hubResp);
+                List<CrgFanInMethod> allHub = parseFanInMethods(hubJson);
+                // 只保留文件在本模块内的
+                List<CrgFanInMethod> moduleHub = new ArrayList<>();
+                for (CrgFanInMethod m : allHub) {
+                    if (m.getFile() != null && isFileInModule(m.getFile(), fileSet)) {
+                        moduleHub.add(m);
+                    }
+                }
+                // 截取 Top N
+                if (moduleHub.size() > config.getTopFaninMethods()) {
+                    moduleHub = moduleHub.subList(0, config.getTopFaninMethods());
+                }
+                summary.setTopFanInMethods(moduleHub);
+                log.debug("CRG: module summary — {} hub methods in module ({} global)",
+                        moduleHub.size(), allHub.size());
+            }
+
+            // 2. 外部调用者：对每个 Hub 方法查 callers_of，过滤出模块外调用者
+            List<CrgExternalCaller> externalCallers = new ArrayList<>();
+            int hubQueryLimit = Math.min(config.getMaxCallers(), summary.getTopFanInMethods().size());
+            for (int i = 0; i < hubQueryLimit; i++) {
+                CrgFanInMethod m = summary.getTopFanInMethods().get(i);
+                // 从 CRG 查找 qualified_name 匹配 Function 节点
+                List<CrgNode> candidates = searchNodes(m.getName(), "Function", 5);
+                if (candidates == null || candidates.isEmpty()) continue;
+                for (CrgNode candidate : candidates) {
+                    if (candidate.getQualifiedName() == null) continue;
+                    CrgQueryResult callers = queryGraph("callers_of", candidate.getQualifiedName());
+                    if (callers == null || !callers.hasResults()) continue;
+                    for (CrgNode caller : callers.getResults()) {
+                        if (caller.getFile() != null && !fileSet.contains(caller.getFile())) {
+                            CrgExternalCaller ec = new CrgExternalCaller();
+                            String callerName = caller.getName() != null ? caller.getName()
+                                    : (caller.getQualifiedName() != null ? caller.getQualifiedName() : "?");
+                            ec.setCaller(callerName);
+                            ec.setCallerFile(caller.getFile());
+                            ec.setCallee(m.getName());
+                            ec.setCalleeFile(m.getFile());
+                            externalCallers.add(ec);
+                            if (externalCallers.size() >= config.getMaxCallers() * 2) break;
+                        }
+                    }
+                    if (externalCallers.size() >= config.getMaxCallers() * 2) break;
+                }
+                if (externalCallers.size() >= config.getMaxCallers() * 2) break;
+            }
+            summary.setExternalCallers(externalCallers);
+            log.debug("CRG: module summary — {} external callers", externalCallers.size());
+
+            // 3. 执行流 → 过滤出流经本模块的
+            Map<String, Object> flowArgs = new LinkedHashMap<>();
+            flowArgs.put("sort_by", "criticality");
+            flowArgs.put("limit", config.getTopFlows() * 3);  // 多取再过滤
+            String flowResp = callTool(TOOL_LIST_FLOWS, flowArgs, restTemplate);
+            if (flowResp != null && !flowResp.isEmpty()) {
+                JsonNode flowJson = MAPPER.readTree(flowResp);
+                List<CrgFlowSummary> allFlows = parseFlows(flowJson);
+                List<CrgFlowSummary> moduleFlows = new ArrayList<>();
+                for (CrgFlowSummary flow : allFlows) {
+                    if (flowOverlapsModule(flow, fileSet)) {
+                        moduleFlows.add(flow);
+                    }
+                }
+                if (moduleFlows.size() > config.getTopFlows()) {
+                    moduleFlows = moduleFlows.subList(0, config.getTopFlows());
+                }
+                summary.setModuleFlows(moduleFlows);
+                log.debug("CRG: module summary — {} flows through module ({} global)",
+                        moduleFlows.size(), allFlows.size());
+            }
+
+            // 4. 社区 → 匹配模块所在社区
+            Map<String, Object> commArgs = new LinkedHashMap<>();
+            commArgs.put("sort_by", "size");
+            commArgs.put("detail_level", "minimal");
+            String commResp = callTool(TOOL_LIST_COMMUNITIES, commArgs, restTemplate);
+            if (commResp != null && !commResp.isEmpty()) {
+                JsonNode commJson = MAPPER.readTree(commResp);
+                List<CrgCommunitySummary> allCommunities = parseCommunities(commJson);
+                // 找到包含最多本模块文件的社区
+                for (CrgCommunitySummary c : allCommunities) {
+                    // 社区名称跟模块内文件名前缀匹配
+                    for (String fp : moduleFilePaths) {
+                        String lowerName = c.getName().toLowerCase().replace("-", "");
+                        if (fp.toLowerCase().contains(lowerName)) {
+                            summary.setCommunity(c);
+                            break;
+                        }
+                    }
+                    if (summary.getCommunity() != null) break;
+                }
+            }
+
+            summary.setHighImpactFileCount(externalCallers.size() > 0 ? moduleFilePaths.size() / 3 : 0);
+
+            long elapsed = System.currentTimeMillis() - t0;
+            log.info("CRG: module summary ready in {}ms — {} files, {} hub, {} external, {} flows",
+                    elapsed, moduleFilePaths.size(),
+                    summary.getTopFanInMethods().size(),
+                    summary.getExternalCallers().size(),
+                    summary.getModuleFlows().size());
+            return summary;
+        } catch (Exception e) {
+            log.warn("CRG: failed to build module summary: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ================================================================
+    // Layer 2: 文件影响力分类
+    // ================================================================
+
+    /**
+     * 将模块内文件按影响力分为 core（核心，深审）和 edge（边缘，轻审）。
+     *
+     * <p>分类策略：
+     * <ol>
+     *   <li>CRG 影响力分析：以 Hub 方法所在文件为种子，沿调用边展开 1-2 跳 → core</li>
+     *   <li>被外部模块调用的文件 → core</li>
+     *   <li>参与关键执行流的文件 → core</li>
+     *   <li>社区内紧耦合文件（cohesion > 0.5） → core</li>
+     *   <li>其他文件 → edge</li>
+     * </ol>
+     *
+     * @param moduleFilePaths 模块内所有文件路径
+     * @param moduleSummary   模块级摘要（来自 {@link #getModuleSummary}）
+     * @return 文件分类，CRG 不可用时全部归为 core
+     */
+    public CrgFileClassification classifyFiles(List<String> moduleFilePaths,
+                                                CrgModuleSummary moduleSummary) {
+        CrgFileClassification result = new CrgFileClassification();
+        Set<String> coreSet = new LinkedHashSet<>();
+        Set<String> fileSet = new LinkedHashSet<>(moduleFilePaths);
+
+        if (!isReady() || moduleSummary == null) {
+            // CRG 不可用 → 全部归为 core
+            result.setCoreFiles(new ArrayList<>(moduleFilePaths));
+            result.setEdgeFiles(new ArrayList<>());
+            result.setReason("CRG 不可用，全部按 core 处理");
+            return result;
+        }
+
+        // 1. Hub 方法所在文件 → core
+        if (moduleSummary.getTopFanInMethods() != null) {
+            for (CrgFanInMethod m : moduleSummary.getTopFanInMethods()) {
+                if (m.getFile() != null && fileSet.contains(m.getFile())) {
+                    coreSet.add(m.getFile());
+                }
+            }
+        }
+
+        // 2. 被外部调用的文件 → core
+        if (moduleSummary.getExternalCallers() != null) {
+            for (CrgExternalCaller ec : moduleSummary.getExternalCallers()) {
+                if (ec.getCalleeFile() != null && fileSet.contains(ec.getCalleeFile())) {
+                    coreSet.add(ec.getCalleeFile());
+                }
+            }
+        }
+
+        // 3. 参与关键执行流的文件 → core（遍历 flow pathSteps 匹配）
+        if (moduleSummary.getModuleFlows() != null) {
+            for (CrgFlowSummary flow : moduleSummary.getModuleFlows()) {
+                List<String> steps = flow.getPathSteps();
+                if (steps != null) {
+                    for (String step : steps) {
+                        for (String fp : moduleFilePaths) {
+                            if (step.contains(fp) || fp.contains(extractFileName(step))) {
+                                coreSet.add(fp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. CRG 影响力分析：以 core 中的文件为种子，获取影响半径
+        if (!coreSet.isEmpty()) {
+            try {
+                List<String> seeds = new ArrayList<>(coreSet);
+                if (seeds.size() > 10) seeds = seeds.subList(0, 10);
+                CrgImpactResult impact = getImpactRadius(seeds, 1);  // 1 跳
+                if (impact != null && impact.hasResults()) {
+                    if (impact.getImpactedFiles() != null) {
+                        for (String impacted : impact.getImpactedFiles()) {
+                            if (fileSet.contains(impacted)) {
+                                coreSet.add(impacted);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("CRG: impact radius analysis skipped: {}", e.getMessage());
+            }
+        }
+
+        // 5. 分配 core / edge
+        List<String> coreFiles = new ArrayList<>();
+        List<String> edgeFiles = new ArrayList<>();
+        for (String fp : moduleFilePaths) {
+            if (coreSet.contains(fp)) {
+                coreFiles.add(fp);
+            } else {
+                edgeFiles.add(fp);
+            }
+        }
+
+        result.setCoreFiles(coreFiles);
+        result.setEdgeFiles(edgeFiles);
+        result.setReason(String.format(
+                "Hub=%d, 外部调用=%d, 执行流=%d, 影响半径=%d | core=%d, edge=%d",
+                countMatchingFiles(moduleSummary.getTopFanInMethods(), fileSet),
+                countMatchingFilesCallee(moduleSummary.getExternalCallers(), fileSet),
+                countMatchingFilesFlow(moduleSummary.getModuleFlows(), fileSet),
+                coreSet.size(),
+                coreFiles.size(), edgeFiles.size()));
+
+        log.info("CRG: file classification — {} core / {} edge ({} total)",
+                coreFiles.size(), edgeFiles.size(), moduleFilePaths.size());
+        return result;
+    }
+
+    /**
+     * 获取影响力半径（blast radius）。
+     *
+     * @param seedFiles 种子文件列表
+     * @param maxDepth  BFS 深度（1-2 跳）
+     */
+    public CrgImpactResult getImpactRadius(List<String> seedFiles, int maxDepth) {
+        if (!isReady()) return null;
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("changed_files", seedFiles);
+            args.put("max_depth", maxDepth);
+            args.put("detail_level", "standard");
+            String resp = callTool(TOOL_IMPACT_RADIUS, args, restTemplate);
+            if (resp == null || resp.isEmpty()) return null;
+            return MAPPER.readValue(resp, CrgImpactResult.class);
+        } catch (Exception e) {
+            log.warn("CRG: getImpactRadius failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ================================================================
+    // 内部：模块级过滤辅助方法
+    // ================================================================
+
+    /** 检查文件路径是否在模块文件集合中（支持相对路径/绝对路径模糊匹配）。 */
+    private static boolean isFileInModule(String filePath, Set<String> fileSet) {
+        if (filePath == null) return false;
+        // 精确匹配
+        if (fileSet.contains(filePath)) return true;
+        // 标准化路径分隔符后精确匹配
+        String normalized = filePath.replace('\\', '/');
+        if (fileSet.contains(normalized)) return true;
+        // endsWith 模糊匹配（处理前缀差异如 D:/repo/ vs repo/）
+        for (String fp : fileSet) {
+            String nfp = fp.replace('\\', '/');
+            if (normalized.endsWith(nfp) || nfp.endsWith(normalized)) return true;
+        }
+        return false;
+    }
+
+    /** 检查执行流是否涉及模块文件 */
+    private static boolean flowOverlapsModule(CrgFlowSummary flow, Set<String> fileSet) {
+        if (flow.getPathSteps() == null) return false;
+        for (String step : flow.getPathSteps()) {
+            for (String fp : fileSet) {
+                if (step.contains(fp) || fp.contains(extractFileName(step))) return true;
+            }
+        }
+        return false;
+    }
+
+    private static String extractFileName(String path) {
+        if (path == null) return "";
+        int lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        return lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+    }
+
+    // ---- 统计辅助方法 ----
+    private static int countMatchingFiles(List<CrgFanInMethod> methods, Set<String> fileSet) {
+        if (methods == null) return 0;
+        return (int) methods.stream().filter(m -> m.getFile() != null && isFileInModule(m.getFile(), fileSet)).count();
+    }
+    private static int countMatchingFilesCallee(List<CrgExternalCaller> callers, Set<String> fileSet) {
+        if (callers == null) return 0;
+        return (int) callers.stream().filter(c -> c.getCalleeFile() != null && fileSet.contains(c.getCalleeFile())).count();
+    }
+    private static int countMatchingFilesFlow(List<CrgFlowSummary> flows, Set<String> fileSet) {
+        if (flows == null) return 0;
+        Set<String> matched = new LinkedHashSet<>();
+        for (CrgFlowSummary f : flows) {
+            if (f.getPathSteps() != null) {
+                for (String step : f.getPathSteps()) {
+                    for (String fp : fileSet) {
+                        if (step.contains(fp)) matched.add(fp);
+                    }
+                }
+            }
+        }
+        return matched.size();
     }
 
     /**

@@ -336,4 +336,129 @@ public final class CrgModels {
         public List<CrgNode> getResults() { return results; }
         public void setResults(List<CrgNode> v) { this.results = v; }
     }
+
+    // ================================================================
+    // Layer 1: 模块级摘要
+    // ================================================================
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class CrgModuleSummary {
+        /** 模块内高扇入方法（被多处调用） */
+        private List<CrgFanInMethod> topFanInMethods = new ArrayList<>();
+        /** 外部调用者（谁从模块外调用本模块的方法） */
+        private List<CrgExternalCaller> externalCallers = new ArrayList<>();
+        /** 流经本模块的执行流 */
+        private List<CrgFlowSummary> moduleFlows = new ArrayList<>();
+        /** 模块所属社区 */
+        private CrgCommunitySummary community;
+        /** 模块文件总数 */
+        private int totalFiles;
+        /** 高风险文件数（被外部调用、参与关键流 -> core） */
+        private int highImpactFileCount;
+
+        // getters / setters
+        public List<CrgFanInMethod> getTopFanInMethods() { return topFanInMethods; }
+        public void setTopFanInMethods(List<CrgFanInMethod> v) { this.topFanInMethods = v; }
+        public List<CrgExternalCaller> getExternalCallers() { return externalCallers; }
+        public void setExternalCallers(List<CrgExternalCaller> v) { this.externalCallers = v; }
+        public List<CrgFlowSummary> getModuleFlows() { return moduleFlows; }
+        public void setModuleFlows(List<CrgFlowSummary> v) { this.moduleFlows = v; }
+        public CrgCommunitySummary getCommunity() { return community; }
+        public void setCommunity(CrgCommunitySummary v) { this.community = v; }
+        public int getTotalFiles() { return totalFiles; }
+        public void setTotalFiles(int v) { this.totalFiles = v; }
+        public int getHighImpactFileCount() { return highImpactFileCount; }
+        public void setHighImpactFileCount(int v) { this.highImpactFileCount = v; }
+    }
+
+    // ================================================================
+    // Layer 2: 外部调用者
+    // ================================================================
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class CrgExternalCaller {
+        /** 调用者 qualified_name */
+        private String caller;
+        /** 调用者文件路径 */
+        private String callerFile;
+        /** 被调用的模块内方法 */
+        private String callee;
+        /** 被调用者文件路径 */
+        private String calleeFile;
+
+        public String getCaller() { return caller; }
+        public void setCaller(String v) { this.caller = v; }
+        public String getCallerFile() { return callerFile; }
+        public void setCallerFile(String v) { this.callerFile = v; }
+        public String getCallee() { return callee; }
+        public void setCallee(String v) { this.callee = v; }
+        public String getCalleeFile() { return calleeFile; }
+        public void setCalleeFile(String v) { this.calleeFile = v; }
+    }
+
+    // ================================================================
+    // Layer 2: 文件分类（core / edge）
+    // ================================================================
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class CrgFileClassification {
+        /** 高风险文件 — 全量深审（源码 + 迭代 grep） */
+        private List<String> coreFiles = new ArrayList<>();
+        /** 低风险文件 — 轻审（只发源码，不做迭代 grep） */
+        private List<String> edgeFiles = new ArrayList<>();
+        /** 分类摘要说明 */
+        private String reason;
+
+        public List<String> getCoreFiles() { return coreFiles; }
+        public void setCoreFiles(List<String> v) { this.coreFiles = v; }
+        public List<String> getEdgeFiles() { return edgeFiles; }
+        public void setEdgeFiles(List<String> v) { this.edgeFiles = v; }
+        public String getReason() { return reason; }
+        public void setReason(String v) { this.reason = v; }
+    }
+
+    // ================================================================
+    // 影响力分析结果
+    // ================================================================
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class CrgImpactResult {
+        private String status;
+        private String summary;
+        @JsonProperty("changed_files")
+        private List<String> changedFiles;
+        @JsonProperty("changed_nodes")
+        private List<CrgNode> changedNodes;
+        @JsonProperty("impacted_nodes")
+        private List<CrgNode> impactedNodes;
+        @JsonProperty("impacted_files")
+        private List<String> impactedFiles;
+        private List<CrgEdge> edges;
+        private boolean truncated;
+        @JsonProperty("total_impacted")
+        private int totalImpacted;
+
+        public boolean hasResults() {
+            return (impactedNodes != null && !impactedNodes.isEmpty())
+                || (impactedFiles != null && !impactedFiles.isEmpty());
+        }
+        public String getStatus() { return status; }
+        public void setStatus(String v) { this.status = v; }
+        public String getSummary() { return summary; }
+        public void setSummary(String v) { this.summary = v; }
+        public List<String> getChangedFiles() { return changedFiles; }
+        public void setChangedFiles(List<String> v) { this.changedFiles = v; }
+        public List<CrgNode> getChangedNodes() { return changedNodes; }
+        public void setChangedNodes(List<CrgNode> v) { this.changedNodes = v; }
+        public List<CrgNode> getImpactedNodes() { return impactedNodes; }
+        public void setImpactedNodes(List<CrgNode> v) { this.impactedNodes = v; }
+        public List<String> getImpactedFiles() { return impactedFiles; }
+        public void setImpactedFiles(List<String> v) { this.impactedFiles = v; }
+        public List<CrgEdge> getEdges() { return edges; }
+        public void setEdges(List<CrgEdge> v) { this.edges = v; }
+        public boolean isTruncated() { return truncated; }
+        public void setTruncated(boolean v) { this.truncated = v; }
+        public int getTotalImpacted() { return totalImpacted; }
+        public void setTotalImpacted(int v) { this.totalImpacted = v; }
+    }
 }

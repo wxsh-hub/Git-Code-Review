@@ -1,6 +1,8 @@
 package com.devops.ai.core.review.ai;
 
 import com.devops.ai.core.llm.LlmClient;
+import com.devops.ai.core.crg.CrgClient;
+import com.devops.ai.core.crg.CrgModels;
 import com.devops.ai.core.review.model.*;
 import com.devops.ai.core.review.parser.JavaFileParser;
 import com.devops.ai.infrastructure.entity.AiConfig;
@@ -52,6 +54,7 @@ public class CodeReviewAiService {
     private final SecretDetector secretDetector;
     private final FindingVerifier findingVerifier;
     private final GrepTracer grepTracer;
+    private final CrgClient crgClient;
 
     @Value("${ocr.fallback-on-error:true}")
     private boolean ocrFallbackOnError;
@@ -84,7 +87,7 @@ public class CodeReviewAiService {
                                FindingBlameTracer findingBlameTracer,
                                ReviewLlmService reviewLlmService,
                                SecretDetector secretDetector, FindingVerifier findingVerifier,
-                               GrepTracer grepTracer) {
+                               GrepTracer grepTracer, CrgClient crgClient) {
         this.llmClient = llmClient;
         this.aiConfigRepository = aiConfigRepository;
         this.configEncryptor = configEncryptor;
@@ -94,6 +97,7 @@ public class CodeReviewAiService {
         this.secretDetector = secretDetector;
         this.findingVerifier = findingVerifier;
         this.grepTracer = grepTracer;
+        this.crgClient = crgClient;
     }
 
     // ================================================================
@@ -132,6 +136,14 @@ public class CodeReviewAiService {
         String name;                    // 业务链路名，如 "user"
         List<FileDiff> files;          // 该组的文件列表
         String background;              // 审查背景上下文
+
+        // --- CRG 集成字段 ---
+        CrgModels.CrgModuleSummary crgModuleSummary;      // Layer 1: 模块级摘要
+        CrgModels.CrgFileClassification crgClassification; // Layer 2: 文件分类
+
+        // 分类后使用的文件列表（core → 全量，edge → 轻审）
+        transient List<FileDiff> coreFiles;
+        transient List<FileDiff> edgeFiles;
 
         ReviewGroup(String name, List<FileDiff> files, String background) {
             this.name = name;
@@ -922,11 +934,56 @@ public class CodeReviewAiService {
     List<Finding> reviewDeepScanByModule(List<FileDiff> diffs, CodeReviewContext context) throws Exception {
         // 确保每个 FileDiff 都有 newContent（从仓库读取缺失的文件）
         ensureFileContent(diffs, context.getRepoPath());
+        long scanStartTime = System.currentTimeMillis();
 
+        // ================================================================
+        // Layer 0: CRG 全量构建（一次性）
+        // ================================================================
+        boolean crgReady = false;
+        if (crgClient != null && crgClient.isEnabled()) {
+            try {
+                long t0 = System.currentTimeMillis();
+                crgClient.buildOrUpdateGraph(context.getRepoPath());
+                long elapsed = System.currentTimeMillis() - t0;
+                log.info("[CRG Layer 0] graph build/update completed in {}ms", elapsed);
+                crgReady = true;
+            } catch (Exception e) {
+                log.warn("[CRG Layer 0] build failed, proceeding without CRG: {}", e.getMessage());
+            }
+        } else {
+            log.info("[CRG Layer 0] CRG not enabled, skipping graph analysis");
+        }
+
+        // 基本分组（不含 CRG 上下文，后面再注入模块级摘要）
         Map<String, ReviewGroup> groups = groupByBusinessLink(diffs, context);
         int concurrency = Math.min(scanConcurrency, groups.size());
-        log.info("Deep scan: {} files → {} module groups, {} concurrency",
+        log.info("[Deep Scan] {} files -> {} module groups, {} concurrency",
                 diffs.size(), groups.size(), concurrency);
+
+        // ================================================================
+        // Layer 1: 模块级摘要 + Layer 2: 影响力过滤（并发注入）
+        // ================================================================
+        if (crgReady) {
+            long t0 = System.currentTimeMillis();
+            int enrichedCount = 0;
+            for (ReviewGroup group : groups.values()) {
+                if (group.files.size() < 3) {
+                    log.info("[CRG Layer 1+2] module '{}': {} files (too small, skip enrichment)",
+                            group.name, group.files.size());
+                    continue;
+                }
+                try {
+                    enrichGroupWithModuleSummary(group);
+                    enrichedCount++;
+                } catch (Exception e) {
+                    log.warn("[CRG Layer 1+2] module '{}': enrichment failed: {}",
+                            group.name, e.getMessage());
+                }
+            }
+            long elapsed = System.currentTimeMillis() - t0;
+            log.info("[CRG Layer 1+2] enrichment complete: {}/{} groups enriched in {}ms",
+                    enrichedCount, groups.size(), elapsed);
+        }
 
         ExecutorService executor = Executors.newFixedThreadPool(concurrency);
         List<CompletableFuture<List<Finding>>> futures = new ArrayList<>();
@@ -935,12 +992,30 @@ public class CodeReviewAiService {
             for (ReviewGroup group : groups.values()) {
                 futures.add(CompletableFuture.supplyAsync(() -> {
                     try {
-                        log.info("Deep scan module '{}': {} files → calling LLM...",
-                                group.name, group.files.size());
-                        List<Finding> findings = reviewDeepScanModuleGroup(group, context);
+                        long tModule = System.currentTimeMillis();
+                        List<Finding> findings;
+
+                        // --- 有 CRG 分类 → core/edge 分流 ---
+                        if (group.crgClassification != null
+                                && !group.crgClassification.getCoreFiles().isEmpty()) {
+                            log.info("[Layer 2] module '{}': {} core + {} edge files, routing...",
+                                    group.name,
+                                    group.crgClassification.getCoreFiles().size(),
+                                    group.crgClassification.getEdgeFiles().size());
+                            findings = reviewGroupWithClassification(group, context);
+                        } else {
+                            // 小模块或 CRG 不可用 → 全量深审
+                            log.info("[Layer 2] module '{}': no classification, full deep scan",
+                                    group.name);
+                            findings = reviewDeepScanModuleGroup(group, context);
+                        }
+
+                        long tElapsed = System.currentTimeMillis() - tModule;
+                        log.info("[Layer 2] module '{}': {} findings in {}ms",
+                                group.name, findings.size(), tElapsed);
                         return findings;
                     } catch (Exception e) {
-                        log.error("Deep scan module '{}' failed: {}", group.name, e.getMessage());
+                        log.error("[Layer 2] module '{}' failed: {}", group.name, e.getMessage(), e);
                         return Collections.<Finding>emptyList();
                     }
                 }, executor));
@@ -952,14 +1027,274 @@ public class CodeReviewAiService {
             for (CompletableFuture<List<Finding>> f : futures) {
                 allFindings.addAll(f.get());
             }
-            // 按 file+line+category 去重（不同模块可能通过 grep 发现同一位置的相同问题）
+            // 按 file+line+category 去重
             allFindings = deduplicateByFileAndLine(allFindings);
-            log.info("Deep scan complete: {} findings from {} files in {} groups",
-                    allFindings.size(), diffs.size(), groups.size());
+
+            long totalElapsed = System.currentTimeMillis() - scanStartTime;
+            log.info("[Deep Scan] complete: {} findings from {} files in {} groups, total {}ms",
+                    allFindings.size(), diffs.size(), groups.size(), totalElapsed);
             return allFindings;
         } finally {
             executor.shutdown();
         }
+    }
+
+    // ================================================================
+    // Layer 1: 模块级摘要注入
+    // ================================================================
+
+    /**
+     * 为 ReviewGroup 注入 CRG 模块级摘要 + 文件分类。
+     *
+     * <p>流程：
+     * <ol>
+     *   <li>调用 {@link CrgClient#getModuleSummary} 获取模块级摘要</li>
+     *   <li>调用 {@link CrgClient#classifyFiles} 将文件分为 core/edge</li>
+     *   <li>将摘要文本替换 group.background（替代旧的全局摘要）</li>
+     * </ol>
+     */
+    private void enrichGroupWithModuleSummary(ReviewGroup group) {
+        List<String> filePaths = group.files.stream()
+                .map(FileDiff::getFilePath).collect(Collectors.toList());
+
+        long t0 = System.currentTimeMillis();
+
+        // Layer 1: 模块级摘要
+        CrgModels.CrgModuleSummary summary = crgClient.getModuleSummary(filePaths);
+        if (summary == null) {
+            log.warn("[CRG Layer 1] module '{}': summary unavailable", group.name);
+            return;
+        }
+        group.crgModuleSummary = summary;
+        long t1 = System.currentTimeMillis();
+        log.info("[CRG Layer 1] module '{}': {} hub methods, {} external callers, {} flows, {} community ({}ms)",
+                group.name,
+                summary.getTopFanInMethods() != null ? summary.getTopFanInMethods().size() : 0,
+                summary.getExternalCallers() != null ? summary.getExternalCallers().size() : 0,
+                summary.getModuleFlows() != null ? summary.getModuleFlows().size() : 0,
+                summary.getCommunity() != null ? summary.getCommunity().getName() : "none",
+                t1 - t0);
+
+        // Layer 2: 文件分类
+        CrgModels.CrgFileClassification classification = crgClient.classifyFiles(filePaths, summary);
+        group.crgClassification = classification;
+        long t2 = System.currentTimeMillis();
+        log.info("[CRG Layer 2] module '{}': {} core / {} edge (reason: {}, {}ms)",
+                group.name,
+                classification.getCoreFiles().size(),
+                classification.getEdgeFiles().size(),
+                classification.getReason(),
+                t2 - t1);
+
+        // 构建 FileDiff 分类映射
+        Map<String, FileDiff> fileMap = new LinkedHashMap<>();
+        for (FileDiff f : group.files) {
+            fileMap.put(f.getFilePath(), f);
+        }
+
+        group.coreFiles = new ArrayList<>();
+        for (String fp : classification.getCoreFiles()) {
+            FileDiff diff = fileMap.get(fp);
+            if (diff != null) {
+                group.coreFiles.add(diff);
+            } else {
+                log.warn("[CRG Layer 2] core file '{}' not found in fileMap (classification bug)", fp);
+            }
+        }
+
+        group.edgeFiles = new ArrayList<>();
+        for (String fp : classification.getEdgeFiles()) {
+            FileDiff diff = fileMap.get(fp);
+            if (diff != null && !group.coreFiles.contains(diff)) {
+                group.edgeFiles.add(diff);
+            } else if (diff == null) {
+                log.warn("[CRG Layer 2] edge file '{}' not found in fileMap (classification bug)", fp);
+            }
+        }
+
+        // 将模块级摘要替换 group.background
+        StringBuilder bg = new StringBuilder();
+        bg.append("## 模块: ").append(group.name)
+          .append("（").append(group.files.size()).append(" 个文件");
+        if (classification.getCoreFiles().size() > 0) {
+            bg.append("，核心 ").append(classification.getCoreFiles().size()).append(" 个");
+        }
+        bg.append("）\n");
+
+        bg.append("### 文件列表\n");
+        for (FileDiff f : group.files) {
+            boolean isCore = group.coreFiles != null && group.coreFiles.contains(f);
+            bg.append("- ").append(f.getFilePath())
+              .append(isCore ? " [核心]" : " [边缘]")
+              .append("\n");
+        }
+        bg.append("\n");
+
+        // 注入模块级 CRG 摘要
+        bg.append(buildCrgModuleSummaryText(summary));
+
+        group.background = bg.toString();
+
+        long t3 = System.currentTimeMillis();
+        log.info("[CRG Layer 1+2] module '{}': enrichment complete in {}ms total (core={}, edge={})",
+                group.name, t3 - t0,
+                group.coreFiles != null ? group.coreFiles.size() : 0,
+                group.edgeFiles != null ? group.edgeFiles.size() : 0);
+    }
+
+    // ================================================================
+    // Layer 2: core/edge 分流审查
+    // ================================================================
+
+    /**
+     * 按 CRG 分类分流审查：core 文件全量深审，edge 文件轻审。
+     */
+    private List<Finding> reviewGroupWithClassification(ReviewGroup group, CodeReviewContext context)
+            throws Exception {
+        List<Finding> allFindings = new ArrayList<>();
+
+        // --- Core 文件：全量迭代 grep 深审 ---
+        if (group.coreFiles != null && !group.coreFiles.isEmpty()) {
+            ReviewGroup coreGroup = new ReviewGroup(
+                    group.name + "#core", group.coreFiles, group.background);
+            coreGroup.crgModuleSummary = group.crgModuleSummary;
+            coreGroup.crgClassification = group.crgClassification;
+
+            long t0 = System.currentTimeMillis();
+            List<Finding> coreFindings = reviewDeepScanModuleGroup(coreGroup, context);
+            long elapsed = System.currentTimeMillis() - t0;
+
+            for (Finding f : coreFindings) {
+                f.setModuleName(group.name);
+            }
+            allFindings.addAll(coreFindings);
+            log.info("[Layer 2] module '{}' core: {} files -> {} findings in {}ms",
+                    group.name, group.coreFiles.size(), coreFindings.size(), elapsed);
+        }
+
+        // --- Edge 文件：轻审（只发源码，不做迭代 grep） ---
+        if (group.edgeFiles != null && !group.edgeFiles.isEmpty()) {
+            long t0 = System.currentTimeMillis();
+            List<Finding> edgeFindings = reviewEdgeFiles(group, context);
+            long elapsed = System.currentTimeMillis() - t0;
+
+            for (Finding f : edgeFindings) {
+                f.setModuleName(group.name);
+            }
+            allFindings.addAll(edgeFindings);
+            log.info("[Layer 2] module '{}' edge: {} files -> {} findings in {}ms",
+                    group.name, group.edgeFiles.size(), edgeFindings.size(), elapsed);
+        }
+
+        return allFindings;
+    }
+
+    /**
+     * 边缘文件轻审：只发源码做单轮审查，不做迭代 grep。
+     *
+     * <p>轻审策略：
+     * <ol>
+     *   <li>源码以简化上下文发送（只发类名 + 方法签名，不展开全部方法体）</li>
+     *   <li>不发迭代 grep 能力，LLM 必须在单轮内完成审查</li>
+     *   <li>只关注 P0/P1 级别问题（安全、事务、NPE、并发、资源泄漏）</li>
+     * </ol>
+     */
+    private List<Finding> reviewEdgeFiles(ReviewGroup parentGroup, CodeReviewContext context)
+            throws Exception {
+        if (parentGroup.edgeFiles == null || parentGroup.edgeFiles.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<FileDiff> edgeFiles = parentGroup.edgeFiles;
+
+        // 构建轻审 prompt：只发轻量上下文
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("你是资深 Java 代码审查专家，请快速审查以下边缘文件的代码。\n\n");
+        prompt.append("## 审查范围\n");
+        prompt.append("这些文件被 CRG 分析标记为低风险（不属于核心调用圈），");
+        prompt.append("请只关注 P0/P1 级别的严重问题：\n");
+        prompt.append("- SECURITY: SQL注入、XSS、权限绕过\n");
+        prompt.append("- TRANSACTION: 写操作缺少事务\n");
+        prompt.append("- NPE: 明显的空指针风险\n");
+        prompt.append("- CONCURRENCY: 共享可变变量线程安全\n");
+        prompt.append("- RESOURCE_LEAK: 资源未关闭\n\n");
+        prompt.append("不要报告 P2/P3 级别的问题（性能、代码风格、硬编码、死代码等）。\n\n");
+
+        // 只发送文件概要 + 截断的源码
+        prompt.append("## 模块: ").append(parentGroup.name).append("（边缘 ")
+              .append(edgeFiles.size()).append(" 个文件）\n\n");
+        for (FileDiff diff : edgeFiles) {
+            String content = diff.getNewContent();
+            if (content == null || content.isEmpty()) continue;
+            // 轻审发送更短的截断（6000 chars vs 12000）
+            if (content.length() > 6000) {
+                content = content.substring(0, 6000)
+                        + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
+            }
+            prompt.append("### ").append(diff.getFilePath()).append("\n");
+            prompt.append("```java\n").append(content).append("\n```\n\n");
+        }
+
+        // 如果有模块摘要，简要注入
+        if (parentGroup.crgModuleSummary != null) {
+            prompt.append("## 代码结构参考\n");
+            CrgModels.CrgModuleSummary s = parentGroup.crgModuleSummary;
+            if (s.getExternalCallers() != null && !s.getExternalCallers().isEmpty()) {
+                prompt.append("此模块被外部调用：");
+                for (CrgModels.CrgExternalCaller ec : s.getExternalCallers()) {
+                    prompt.append(ec.getCaller()).append(" → ").append(ec.getCallee()).append(", ");
+                }
+                prompt.append("\n");
+            }
+            if (s.getModuleFlows() != null && !s.getModuleFlows().isEmpty()) {
+                prompt.append("涉及关键流：");
+                for (CrgModels.CrgFlowSummary flow : s.getModuleFlows()) {
+                    prompt.append(flow.getName()).append(", ");
+                }
+                prompt.append("\n");
+            }
+        }
+
+        prompt.append("\n请输出 JSON（不要 markdown 代码块标记）：\n");
+        prompt.append("{\"findings\": [{\"file\": \"...\", \"severity\": \"HIGH\", "
+                + "\"category\": \"NPE\", \"evidence\": \"...\",\"suggestedFix\": \"...\", "
+                + "\"trigger\": \"...\", \"startLine\": 45, \"endLine\": 45, \"confidence\": 0.80}]}\n");
+        prompt.append("如果没有发现问题，输出 {\"findings\": []}\n");
+
+        // 单轮 LLM 调用（无迭代 grep）
+        String response;
+        try {
+            String provider = getProvider();
+            String apiKey = getApiKey();
+            String apiUrl = getApiUrl();
+            String model = getModel();
+            response = llmClient.call(provider, apiKey, apiUrl, model,
+                    prompt.toString(), 4096, "json_object");
+        } catch (Exception e) {
+            log.warn("[Layer 2 edge] LLM call failed for module '{}': {}", parentGroup.name, e.getMessage());
+            return Collections.emptyList();
+        }
+
+        // 解析响应
+        try {
+            String json = extractJson(response);
+            com.fasterxml.jackson.databind.JsonNode root = MAPPER.readTree(json);
+            com.fasterxml.jackson.databind.JsonNode findingsNode = root.get("findings");
+            if (findingsNode != null && findingsNode.isArray()) {
+                List<Finding> findings = new ArrayList<>();
+                for (com.fasterxml.jackson.databind.JsonNode fn : findingsNode) {
+                    Finding f = MAPPER.treeToValue(fn, Finding.class);
+                    if (f.getConfidence() <= 0) f.setConfidence(0.70);
+                    findings.add(f);
+                }
+                log.info("[Layer 2 edge] {} files -> {} findings (light scan)",
+                        edgeFiles.size(), findings.size());
+                return findings;
+            }
+        } catch (Exception e) {
+            log.warn("[Layer 2 edge] failed to parse light scan response: {}", e.getMessage());
+        }
+        return Collections.emptyList();
     }
 
     /**
@@ -1513,9 +1848,115 @@ public class CodeReviewAiService {
 
     /**
      * 将 code-review-graph 的分析结果转为审查背景文本。
-     * 这段文本会作为 background 参数传给 OCR，LLM 在审查时能结合架构信息做判断。
+     *
+     * <p>B1 修复 — 按模式分流：
+     * <ul>
+     *   <li>diff 模式 → 现有 ImpactScope 逻辑（保留不动）</li>
+     *   <li>deep scan 模式 → CRG 全局摘要（高扇入方法 + 执行流 + 社区）</li>
+     * </ul>
      */
     private String buildGraphBackground(CodeReviewContext context) {
+
+        // === deep scan 模式：模块级摘要由 enrichGroupWithModuleSummary() 注入 ===
+        // 这里只返回最小兜底文本，后续会被替换
+        if (context.isUseOcrDeepScan()) {
+            log.debug("buildGraphBackground: deep scan mode, module-level summary will be injected later");
+            return "请全面审查代码缺陷：空指针、事务边界、并发安全、异常处理、资源释放。";
+        }
+
+        // === diff 模式：走现有 ImpactScope 逻辑（保留不动） ===
+        return buildGraphBackgroundFromImpactScope(context);
+    }
+
+    /**
+     * CRG 模块级摘要 → 审查背景文本（~500 tokens/模块）。
+     * 与全局摘要不同，这里只包含本模块相关的数据。
+     */
+    private String buildCrgModuleSummaryText(CrgModels.CrgModuleSummary summary) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## 代码结构分析（CRG 模块级）\n\n");
+
+        // 模块统计
+        sb.append("本模块 ").append(summary.getTotalFiles()).append(" 个文件");
+        if (summary.getHighImpactFileCount() > 0) {
+            sb.append("，其中 ").append(summary.getHighImpactFileCount()).append(" 个高风险文件");
+        }
+        sb.append("。\n");
+
+        // 高扇入方法（本模块内）
+        List<CrgModels.CrgFanInMethod> fanInMethods = summary.getTopFanInMethods();
+        if (fanInMethods != null && !fanInMethods.isEmpty()) {
+            sb.append("\n### 高风险方法（本模块内，高扇入）\n");
+            sb.append("以下方法被多处调用，修改影响面大，优先审查：\n");
+            for (CrgModels.CrgFanInMethod m : fanInMethods) {
+                sb.append("- ").append(m.getName())
+                  .append(" — ").append(m.getCallers()).append(" 处调用");
+                if (m.getFile() != null) {
+                    sb.append(" (").append(m.getFile());
+                    if (m.getLine() != null) {
+                        sb.append(":").append(m.getLine());
+                    }
+                    sb.append(")");
+                }
+                sb.append("\n");
+            }
+        }
+
+        // 外部调用者（谁从模块外调本模块）
+        List<CrgModels.CrgExternalCaller> externalCallers = summary.getExternalCallers();
+        if (externalCallers != null && !externalCallers.isEmpty()) {
+            sb.append("\n### 外部调用者（模块外 → 本模块）\n");
+            sb.append("以下方法被外部模块调用，是模块的入口点，改动影响面大：\n");
+            for (CrgModels.CrgExternalCaller ec : externalCallers) {
+                sb.append("- ").append(ec.getCaller())
+                  .append("\n  → ").append(ec.getCallee());
+                if (ec.getCalleeFile() != null) {
+                    sb.append(" (").append(ec.getCalleeFile()).append(")");
+                }
+                sb.append("\n");
+            }
+        }
+
+        // 执行流（流经本模块的）
+        List<CrgModels.CrgFlowSummary> flows = summary.getModuleFlows();
+        if (flows != null && !flows.isEmpty()) {
+            sb.append("\n### 流经本模块的关键执行流\n");
+            sb.append("关注流程中的异常处理、事务一致性：\n");
+            for (CrgModels.CrgFlowSummary flow : flows) {
+                sb.append("- ").append(flow.getName())
+                  .append(" (criticality=").append(String.format("%.2f", flow.getCriticality()))
+                  .append(", depth=").append(flow.getDepth())
+                  .append(", ").append(flow.getNodeCount()).append(" nodes)\n");
+                List<String> steps = flow.getPathSteps();
+                if (steps != null) {
+                    for (String step : steps) {
+                        sb.append("  → ").append(step).append("\n");
+                    }
+                }
+            }
+        }
+
+        // 社区归属
+        CrgModels.CrgCommunitySummary community = summary.getCommunity();
+        if (community != null) {
+            sb.append("\n### 模块社区归属\n");
+            sb.append("- ").append(community.getName())
+              .append(": ").append(community.getSize()).append(" nodes")
+              .append(", cohesion=").append(String.format("%.2f", community.getCohesion()));
+            if (community.getDominantLanguage() != null) {
+                sb.append(", lang=").append(community.getDominantLanguage());
+            }
+            sb.append("\n");
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * 从 ImpactScope 提取架构背景（diff 模式 + deep scan fallback）。
+     * W4 修复 — 每个 catch 分支都加 WARN 日志。
+     */
+    private String buildGraphBackgroundFromImpactScope(CodeReviewContext context) {
         String graphJson = context.getGraphAnalysisJson();
 
         // 尝试从 JSON 解析 ImpactScope
@@ -1527,6 +1968,7 @@ public class CodeReviewAiService {
                     scope = graph.getImpactScope();
                 }
             } catch (Exception e) {
+                log.warn("Failed to parse graphAnalysisJson, falling back to context.getGraph(): {}", e.getMessage());
                 // graphJson 可能不是标准的 CodeReviewGraph JSON，尝试从对象中直接取
                 CodeReviewGraph graph = context.getGraph();
                 if (graph != null && graph.getImpactScope() != null) {
@@ -1542,6 +1984,7 @@ public class CodeReviewAiService {
         }
 
         if (scope == null) {
+            log.warn("ImpactScope not available for {} mode", context.isUseOcrDeepScan() ? "deep scan" : "diff");
             return "请全面审查代码缺陷：空指针、事务边界、并发安全、异常处理、资源释放。";
         }
 
@@ -1969,6 +2412,20 @@ public class CodeReviewAiService {
         sb.append("- **严禁报告「依赖版本升级的风险」除非你确认真的不兼容** — 版本号变了不代表有问题\n");
         sb.append("- **行号必须是源文件的原始行号**，文件可能被截断，但行号从第 1 行开始计数，不要从截断点重新计数\n");
         sb.append("- **审查代码时必须检查所在方法/类的注解**（如 @Transactional、@Async、@Cacheable、@Scheduled 等），不要只看代码片段本身\n\n");
+
+        // B3 修复 — CRG 使用指南
+        sb.append("## 代码结构分析（CRG）\n");
+        sb.append("你已收到本模块的代码结构分析（见用户消息中的「代码结构分析（CRG）」章节），包含：\n");
+        sb.append("- **高风险方法列表**（高扇入）：这些方法被多处调用，修改影响面大，优先审查\n");
+        sb.append("- **关键执行流**：流经本模块的业务流程，关注流程中的异常处理、事务一致性\n");
+        sb.append("- **模块社区**：代码的模块归属和耦合度，高耦合区域需要更严格的审查\n\n");
+        sb.append("**当你需要查看某个方法的调用关系时**，发出 grep 请求（symbol 填 ClassName.methodName），\n");
+        sb.append("系统会返回精确的调用链（调用者 + 被调用者 + 方法体），而非纯文本匹配。\n");
+        sb.append("这比传统的 grep 高效得多，通常 1-2 轮就能确认一个 finding。\n\n");
+        sb.append("**利用 CRG 数据的策略**：\n");
+        sb.append("1. 先看高风险方法列表，优先审查这些方法的实现\n");
+        sb.append("2. 对可疑方法发 grep 请求，系统会返回调用链，帮你判断影响范围\n");
+        sb.append("3. 如果发现跨模块调用，重点关注事务一致性和异常传播\n\n");
 
         // 编译错误跳过规则
         sb.append("## 编译错误跳过规则（以下类型不要报告）\n");
