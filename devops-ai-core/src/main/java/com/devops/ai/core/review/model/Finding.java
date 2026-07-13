@@ -1,6 +1,7 @@
 package com.devops.ai.core.review.model;
 
 import com.devops.ai.core.efficiency.model.DeveloperEfficiency;
+import com.fasterxml.jackson.annotation.JsonAlias;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,9 +47,11 @@ public class Finding {
     private String id;
 
     /** 文件路径 */
+    @JsonAlias({"file", "filePath", "file_path"})
     private String file;
 
     /** 起始行号（1-indexed） */
+    @JsonAlias({"startLine", "line", "lineStart"})
     private int startLine;
 
     /** 结束行号（1-indexed） */
@@ -73,7 +76,12 @@ public class Finding {
     private String trigger;
 
     /** 建议修复方式 */
+    @JsonAlias({"suggestedFix", "suggestionCode", "fix"})
     private String suggestedFix;
+
+    /** Q3 决策 — LLM 输出的关联符号名（供 Phase 5 调用链验证使用） */
+    @JsonAlias({"symbol", "method"})
+    private String symbol;
 
     /** 责任人（来自 git blame，Phase 5 填充） */
     private String owner;
@@ -384,6 +392,9 @@ public class Finding {
 
     public String getSuggestedFix() { return suggestedFix; }
     public void setSuggestedFix(String suggestedFix) { this.suggestedFix = suggestedFix; }
+
+    public String getSymbol() { return symbol; }
+    public void setSymbol(String symbol) { this.symbol = symbol; }
 
     public String getOwner() { return owner; }
     public void setOwner(String owner) { this.owner = owner; }

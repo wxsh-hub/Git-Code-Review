@@ -1258,7 +1258,8 @@ public class CodeReviewAiService {
         prompt.append("\n请输出 JSON（不要 markdown 代码块标记）：\n");
         prompt.append("{\"findings\": [{\"file\": \"...\", \"severity\": \"HIGH\", "
                 + "\"category\": \"NPE\", \"evidence\": \"...\",\"suggestedFix\": \"...\", "
-                + "\"trigger\": \"...\", \"startLine\": 45, \"endLine\": 45, \"confidence\": 0.80}]}\n");
+                + "\"trigger\": \"...\", \"startLine\": 45, \"endLine\": 45, \"confidence\": 0.80, "
+                + "\"symbol\": \"关联方法名，如 UserService.save（可选）\"}]}\n");
         prompt.append("如果没有发现问题，输出 {\"findings\": []}\n");
 
         // 单轮 LLM 调用（无迭代 grep）
@@ -2362,7 +2363,8 @@ public class CodeReviewAiService {
         sb.append("      \"trigger\": \"触发条件\",\n");
         sb.append("      \"startLine\": 45,\n");
         sb.append("      \"endLine\": 45,\n");
-        sb.append("      \"confidence\": 0.90\n");
+        sb.append("      \"confidence\": 0.90,\n");
+        sb.append("      \"symbol\": \"关联方法名，如 UserService.save（可选，填写后系统会做调用链验证）\n");
         sb.append("    }\n");
         sb.append("  ],\n");
         sb.append("  \"grep_requests\": [\n");
@@ -2640,19 +2642,23 @@ public class CodeReviewAiService {
         Map<String, Finding> seen = new LinkedHashMap<>();
         List<Finding> result = new ArrayList<>();
         for (Finding f : findings) {
+            // W5 修复 — 行号除以 3 做粗粒度去重，避免行号偏差 1-2 的重复 findings
+            int lineBucket = f.getStartLine() / 3;
             String key = (f.getFile() != null ? f.getFile() : "")
-                    + ":" + f.getStartLine()
-                    + ":" + (f.getCategory() != null ? f.getCategory().name() : "");
+                    + "#L" + lineBucket
+                    + "#" + (f.getCategory() != null ? f.getCategory().name() : "");
             if (!seen.containsKey(key)) {
                 seen.put(key, f);
                 result.add(f);
             } else {
-                log.debug("Dedup: skipping duplicate finding at {}:{}", f.getFile(), f.getStartLine());
+                log.debug("Dedup: skipping duplicate finding at {}:{} (lineBucket={})",
+                        f.getFile(), f.getStartLine(), lineBucket);
             }
         }
         int removed = findings.size() - result.size();
         if (removed > 0) {
-            log.info("Dedup by file+line+category: {} → {} (removed {} duplicates)", findings.size(), result.size(), removed);
+            log.info("Dedup by file+lineBucket+category: {} → {} (removed {} duplicates)",
+                    findings.size(), result.size(), removed);
         }
         return result;
     }

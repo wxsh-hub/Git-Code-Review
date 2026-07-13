@@ -20,19 +20,21 @@ import java.util.Set;
  */
 public class ModulePathResolver {
 
-    /** 框架/基础设施目录名，提取模块名时跳过 */
+    /** 框架/基础设施目录名，提取模块名时跳过。
+     *  W1 修复 — 移除了 "gateway", "admin", "api", "handler" 等业务常见词，
+     *  避免网关/后台管理等业务模块名被错误跳过。 */
     private static final Set<String> FRAMEWORK_DIRS = new HashSet<>(Arrays.asList(
             "java", "src", "main", "resources", "test",
             "controller", "service", "mapper", "dao", "repository",
             "model", "entity", "domain", "dto", "vo",
             "config", "util", "utils", "common", "base", "infra",
-            // 工程框架/中间件目录
-            "web", "templates", "static", "proto", "rpc", "api",
-            "framework", "starter", "logging", "gateway",
-            "spring", "conf", "enums", "cors", "handler",
+            // 工程框架/中间件目录（不含业务常见词）
+            "web", "templates", "static", "proto", "rpc",
+            "framework", "starter", "logging",
+            "spring", "conf", "enums", "cors",
             "pojo", "json", "databind", "serializer",
             "exception", "interceptor", "filter", "listener",
-            "codegen", "admin"
+            "codegen"
     ));
 
     private ModulePathResolver() {
