@@ -83,3 +83,20 @@ ocr:
     retry-count: 1                           # 单文件 LLM 调用失败重试次数
     max-grep-rounds: 10                      # 迭代 grep 最大轮次
     max-grep-per-round: 5                    # 每轮最大 grep 请求数
+
+# ================================================================
+# CRG (code-review-graph) 依赖分析集成
+# ================================================================
+crg:
+  enabled: true                               # 是否启用 CRG（关闭后完全走原逻辑）
+  url: http://localhost:9527                  # CRG MCP HTTP 服务地址
+  connect-timeout: 10000                      # HTTP 连接超时（毫秒）
+  read-timeout: 120000                        # HTTP 读取超时 — 查询类操作（毫秒，默认 2 分钟）
+  build-read-timeout: 1800000                 # HTTP 读取超时 — 构建操作（毫秒，默认 30 分钟）
+  summary:
+    top-fanin-methods: 10                      # 全局摘要 — 高扇入方法数量
+    top-flows: 5                               # 全局摘要 — 执行流数量
+    fanin-threshold: 3                         # 高扇入阈值（被 >= 此数的方法调用）
+  query:
+    max-callers: 5                             # callers_of 最大返回数
+    max-callees: 5                             # callees_of 最大返回数
