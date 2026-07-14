@@ -185,6 +185,10 @@ public final class CrgModels {
         private int fileCount;
         private double criticality;
         private List<String> pathSteps = new ArrayList<>();
+        /** step 节点的 file 路径，与 pathSteps 一一对应，用于 flow 与模块文件匹配 */
+        private List<String> pathStepFiles = new ArrayList<>();
+        /** flow 级别涉及的文件路径列表（来自 CRG list_flows 响应的 files 字段），用于模块匹配 */
+        private List<String> files = new ArrayList<>();
 
         public int getId() { return id; }
         public void setId(int v) { this.id = v; }
@@ -200,6 +204,10 @@ public final class CrgModels {
         public void setCriticality(double v) { this.criticality = v; }
         public List<String> getPathSteps() { return pathSteps; }
         public void setPathSteps(List<String> v) { this.pathSteps = v; }
+        public List<String> getPathStepFiles() { return pathStepFiles; }
+        public void setPathStepFiles(List<String> v) { this.pathStepFiles = v; }
+        public List<String> getFiles() { return files; }
+        public void setFiles(List<String> v) { this.files = v; }
     }
 
     // ================================================================

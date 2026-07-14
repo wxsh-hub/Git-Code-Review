@@ -73,7 +73,8 @@ public class ReviewLlmService {
             "## grep 查看补充上下文（最多使用一次）\n" +
             "如果代码片段信息不足、无法做出可靠判断，你**必须**在 JSON 中附带一个 grep 请求来查看关联代码，" +
             "而不是直接放弃或返回空。grep 会返回方法的完整实现（含注解和 JavaDoc）。\n" +
-            "格式：在 JSON 中增加 \"grep\": { \"symbol\": \"类名.方法名\", \"file\": \"相对路径（可选）\", \"reason\": \"为什么需要查看\" }\n" +
+            "格式：在 JSON 中增加 \"grep\": { \"symbol\": \"类名.方法名\", \"reason\": \"为什么需要查看\" }\n" +
+            "**⚠️ 不要填 file 字段！** — 系统会自动在仓库中全文搜索该符号，填了路径不准反而会导致搜索变慢或失败\n" +
             "示例：需要确认类上是否有 @Transactional 注解 → \"grep\": { \"symbol\": \"DataSyncServiceImpl.syncFull\", \"reason\": \"查看类级 JavaDoc 和注解\" }\n" +
             "系统收到 grep 后会执行并再次调用你，届时必须输出最终评估结果，不得再次请求 grep。\n\n" +
             "## 输出格式\n" +
@@ -88,7 +89,7 @@ public class ReviewLlmService {
             "  \"grep\": null\n" +
             "}\n" +
             "- grep 为 null 时表示不需要补充上下文，直接给出最终评估\n" +
-            "- 信息不足时填入 grep 对象：{ \"symbol\": \"类名.方法名\", \"reason\": \"为什么需要查看\" }，可选 \"file\" 字段\n" +
+            "- 信息不足时填入 grep 对象：{ \"symbol\": \"类名.方法名\", \"reason\": \"为什么需要查看\" }\n" +
             "- 系统收到 grep 后会执行并再次调用你，届时**必须**输出最终评估，grep 置为 null 且不得再次请求\n\n" +
             "## ⛔ 强制规则：即使证据不足也必须输出 JSON\n" +
             "- 无论信息是否充分，**必须**输出上述格式的 JSON 对象，不得返回空响应\n" +
@@ -216,28 +217,48 @@ public class ReviewLlmService {
     // LLM 调用
     // ================================================================
 
+    /** grep 结果截断上限，防止大结果撑爆 LLM 上下文导致 json_object 返回空 */
+    private static final int GREP_TRUNCATE_CHARS = 8000;
+
     private String callReviewLlm(String provider, String apiKey, String apiUrl,
                                  String model, Finding f, String repoPath) {
         String userPrompt = buildUserPrompt(f, repoPath);
         log.debug("Calling review LLM for finding {} ({} lines {}-{})",
                 f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
 
-        // 第一轮：json_object 模式
-        String firstResponse = llmClient.call(provider, apiKey, apiUrl, model,
-                SYSTEM_PROMPT, userPrompt, 1024, 0.0, "json_object");
+        // 构建多轮对话消息列表（复用 deep scan LLM 的 callMultiTurn 模式）
+        List<Map<String, Object>> messages = new ArrayList<>();
+        Map<String, Object> sysMsg = new HashMap<>();
+        sysMsg.put("role", "system");
+        sysMsg.put("content", SYSTEM_PROMPT);
+        messages.add(sysMsg);
 
-        // json_object 模式下，部分模型遇到 schema 外字段(grep)时会返回空 — 降级重试
+        Map<String, Object> userMsg = new HashMap<>();
+        userMsg.put("role", "user");
+        userMsg.put("content", userPrompt);
+        messages.add(userMsg);
+
+        // 第一轮：json_object 模式，maxTokens 对齐 deep scan
+        String firstResponse = llmClient.callMultiTurn(provider, apiKey, apiUrl, model,
+                messages, 4096, 0.0, "json_object");
+
+        // 第一轮空 → 去掉 json_object 重试
         if (firstResponse == null || firstResponse.trim().isEmpty()) {
-            log.warn("Review LLM returned empty in json_object mode, retrying without json_object (finding {})",
-                    f.getId());
-            firstResponse = llmClient.call(provider, apiKey, apiUrl, model,
-                    SYSTEM_PROMPT, userPrompt, 1024, 0.0, null);
-            // 重试后仍然空 — 记录并让上层兜底
+            log.warn("Review LLM returned empty, retrying without json_object (finding {})", f.getId());
+            try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
+            firstResponse = llmClient.callMultiTurn(provider, apiKey, apiUrl, model,
+                    messages, 4096, 0.0, null);
             if (firstResponse == null || firstResponse.trim().isEmpty()) {
                 log.warn("Review LLM still returned empty after retry (finding {}, file {}, lines {}-{})",
                         f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
             }
         }
+
+        // 添加 assistant 消息到对话历史
+        Map<String, Object> assistantMsg1 = new HashMap<>();
+        assistantMsg1.put("role", "assistant");
+        assistantMsg1.put("content", firstResponse != null ? firstResponse : "");
+        messages.add(assistantMsg1);
 
         // 检查是否包含 grep 请求
         GrepRequest grepReq = extractGrepRequest(firstResponse);
@@ -245,20 +266,31 @@ public class ReviewLlmService {
             return firstResponse;
         }
 
-        // 执行 grep 获取补充上下文
+        // 执行 grep + 截断结果
         log.info("Review LLM requested grep for finding {}: symbol={}, reason={}",
                 f.getId(), grepReq.symbol, grepReq.reason);
-        String grepResult = executeGrepForReview(grepReq, repoPath);
+        String rawGrepResult = executeGrepForReview(grepReq, repoPath);
+        String grepResult = truncateGrepResult(rawGrepResult);
 
-        // 第二轮：追加 grep 结果，要求输出最终评估（不再用 json_object，避免 grep→null 结构变动触发空返回）
-        StringBuilder followUp = new StringBuilder(userPrompt);
-        followUp.append("\n\n--- grep 结果（你请求的补充上下文）---\n");
-        followUp.append(grepResult);
-        followUp.append("\n\n请基于以上 grep 结果和原始代码上下文，输出最终的 JSON 评估。");
-        followUp.append("grep 必须为 null，不得再次请求 grep。");
+        // 第二轮：以多轮对话形式追加 grep 结果
+        Map<String, Object> grepMsg = new HashMap<>();
+        grepMsg.put("role", "user");
+        grepMsg.put("content", "以下是 grep 搜索 `" + grepReq.symbol + "` 的结果（已截断至 " +
+                GREP_TRUNCATE_CHARS + " 字符）：\n\n" + grepResult +
+                "\n\n请基于以上 grep 结果和原始代码上下文，输出最终的 JSON 评估。" +
+                "grep 必须为 null，不得再次请求 grep。");
+        messages.add(grepMsg);
 
-        String secondResponse = llmClient.call(provider, apiKey, apiUrl, model,
-                SYSTEM_PROMPT, followUp.toString(), 1024, 0.0, null);
+        String secondResponse = llmClient.callMultiTurn(provider, apiKey, apiUrl, model,
+                messages, 4096, 0.0, "json_object");
+
+        // 第二轮空 → 去掉 json_object 重试
+        if (secondResponse == null || secondResponse.trim().isEmpty()) {
+            log.warn("Review LLM second round empty, retrying without json_object (finding {})", f.getId());
+            try { Thread.sleep(2000); } catch (InterruptedException ignored) { }
+            secondResponse = llmClient.callMultiTurn(provider, apiKey, apiUrl, model,
+                    messages, 4096, 0.0, null);
+        }
 
         if (secondResponse == null || secondResponse.trim().isEmpty()) {
             log.warn("Review LLM second round returned empty for finding {}, falling back to first grep request",
@@ -266,6 +298,14 @@ public class ReviewLlmService {
             return firstResponse;
         }
         return secondResponse;
+    }
+
+    /** 截断 grep 结果，防止过大上下文导致 LLM 在 json_object 模式下返回空。 */
+    private static String truncateGrepResult(String raw) {
+        if (raw == null) return "(grep 失败)";
+        if (raw.length() <= GREP_TRUNCATE_CHARS) return raw;
+        return raw.substring(0, GREP_TRUNCATE_CHARS)
+                + "\n\n... (截断，原结果 " + raw.length() + " 字符)";
     }
 
     /**

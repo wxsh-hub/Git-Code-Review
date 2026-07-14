@@ -75,6 +75,9 @@ public class CrgClient {
     private volatile String sessionId;
     private volatile long sessionExpiry;
 
+    /** 最近一次 buildOrUpdateGraph 传入的仓库路径，所有查询类工具调用自动注入 repo_root */
+    private volatile String lastRepoRoot;
+
     public CrgClient(CrgConfig config) {
         this.config = config;
     }
@@ -121,6 +124,8 @@ public class CrgClient {
             log.info("CRG: not available, skipping graph build for {}", repoPath);
             return;
         }
+
+        this.lastRepoRoot = repoPath;  // 缓存 repo_root，后续查询自动注入
 
         String currentCommit = getCurrentCommit(repoPath);
         if (currentCommit == null) {
@@ -253,6 +258,9 @@ public class CrgClient {
             if (resp == null || resp.isEmpty()) return null;
 
             CrgQueryResult result = MAPPER.readValue(resp, CrgQueryResult.class);
+            int resultCount = result.getResults() != null ? result.getResults().size() : 0;
+            int edgeCount = result.getEdges() != null ? result.getEdges().size() : 0;
+            log.debug("CRG: queryGraph({}, {}) → {} results, {} edges", pattern, target, resultCount, edgeCount);
             // 缓存即使空结果也存（空结果缓存不返回但避免重复 HTTP）
             if (queryCache.size() < 200) {
                 queryCache.put(cacheKey, result);
@@ -506,9 +514,17 @@ public class CrgClient {
             }
         }
 
-        // 3. 参与关键执行流的文件 → core（遍历 flow pathSteps 匹配）
+        // 3. 参与关键执行流的文件 → core（优先用 flow 级别的 files 列表）
         if (moduleSummary.getModuleFlows() != null) {
             for (CrgFlowSummary flow : moduleSummary.getModuleFlows()) {
+                if (flow.getFiles() != null) {
+                    for (String flowFile : flow.getFiles()) {
+                        if (fileSet.contains(flowFile)) {
+                            coreSet.add(flowFile);
+                        }
+                    }
+                }
+                // 回退：用 pathSteps 匹配（向后兼容）
                 List<String> steps = flow.getPathSteps();
                 if (steps != null) {
                     for (String step : steps) {
@@ -610,12 +626,25 @@ public class CrgClient {
         return false;
     }
 
-    /** 检查执行流是否涉及模块文件 */
+    /** 检查执行流是否涉及模块文件（优先用 step 节点的文件路径匹配）。 */
     private static boolean flowOverlapsModule(CrgFlowSummary flow, Set<String> fileSet) {
-        if (flow.getPathSteps() == null) return false;
-        for (String step : flow.getPathSteps()) {
-            for (String fp : fileSet) {
-                if (step.contains(fp) || fp.contains(extractFileName(step))) return true;
+        // 优先用 flow 级别的 files 列表匹配（CRG list_flows 自带，复用 isFileInModule 三种策略）
+        if (flow.getFiles() != null) {
+            for (String flowFile : flow.getFiles()) {
+                if (isFileInModule(flowFile, fileSet)) return true;
+            }
+        }
+        // 回退：用 step name/pathStepFiles 做全文匹配（向后兼容无 files 字段的旧 CRG 数据）
+        if (flow.getPathStepFiles() != null) {
+            for (String stepFile : flow.getPathStepFiles()) {
+                if (stepFile != null && !stepFile.isEmpty() && isFileInModule(stepFile, fileSet)) return true;
+            }
+        }
+        if (flow.getPathSteps() != null) {
+            for (String step : flow.getPathSteps()) {
+                for (String fp : fileSet) {
+                    if (step.contains(fp) || fp.contains(extractFileName(step))) return true;
+                }
             }
         }
         return false;
@@ -672,6 +701,11 @@ public class CrgClient {
      */
     private String callTool(String toolName, Map<String, Object> arguments, RestTemplate rt) {
         try {
+            // 所有查询类工具自动注入 repo_root（如果已知且 args 中未提供）
+            if (lastRepoRoot != null && !arguments.containsKey("repo_root")) {
+                arguments.put("repo_root", lastRepoRoot);
+            }
+
             ObjectNode request = MAPPER.createObjectNode();
             request.put("jsonrpc", "2.0");
             request.put("id", REQUEST_ID.getAndIncrement());
@@ -1058,14 +1092,23 @@ public class CrgClient {
                     flow.setNodeCount(toInt(f.get("node_count"), 0));
                     flow.setFileCount(toInt(f.get("file_count"), 0));
                     flow.setCriticality(toDouble(f.get("criticality"), 0.0));
-                    // 尝试从 path 字段提取调用链步骤
+                    // flow 级别文件列表（CRG list_flows 自带 files 字段，优先用于模块匹配）
+                    Object filesObj = f.get("files");
+                    if (filesObj instanceof List) {
+                        List<String> flowFiles = new ArrayList<>();
+                        for (Object ff : (List<?>) filesObj) {
+                            if (ff != null) flowFiles.add(ff.toString());
+                        }
+                        flow.setFiles(flowFiles);
+                    }
+                    // path 是整数 ID 列表（CRG 设计如此，详细 step 需调用 get_flow），
+                    // 此处只存 pathSteps 用于日志/调试
                     Object path = f.get("path");
                     if (path instanceof List) {
                         List<String> steps = new ArrayList<>();
                         for (Object step : (List<?>) path) {
                             if (step instanceof Map) {
-                                Map<String, Object> stepMap = (Map<String, Object>) step;
-                                steps.add(toString(stepMap.get("name"), "?"));
+                                steps.add(toString(((Map<String, Object>) step).get("name"), "?"));
                             } else {
                                 steps.add(step != null ? step.toString() : "?");
                             }

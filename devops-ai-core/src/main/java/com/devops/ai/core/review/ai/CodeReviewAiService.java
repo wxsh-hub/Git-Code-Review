@@ -2055,9 +2055,24 @@ public class CodeReviewAiService {
         String apiUrl = getApiUrl();
         String model = getModel();
 
+        // 反循环保护：跨轮去重 + 停滞检测
+        Set<String> greppedSymbols = new HashSet<>();
+        int zeroConfirmedStreak = 0;
+
         for (int round = 1; round <= maxGrepRounds; round++) {
             log.info("Module '{}' iterative round {}: {} confirmed so far",
                     group.name, round, allConfirmed.size());
+
+            // Round 2 开始前：将历史中的完整源码替换为方法签名摘要，大幅减少 token
+            if (round == 2) {
+                String originalSource = (String) messages.get(1).get("content");
+                String summary = buildMethodSignatureSummary(originalSource);
+                messages.get(1).put("content", summary);
+                int saved = originalSource.length() - summary.length();
+                log.info("Module '{}': replaced full source ({}→{} chars), saving {}% tokens for subsequent rounds",
+                        group.name, originalSource.length(), summary.length(),
+                        originalSource.length() > 0 ? saved * 100 / originalSource.length() : 0);
+            }
 
             // 添加 user message
             Map<String, Object> userMsg = new HashMap<>();
@@ -2101,6 +2116,18 @@ public class CodeReviewAiService {
                         group.name, round, result.getConfirmed().size());
             }
 
+            // 停滞检测：连续 2 轮零产出 → 强制结束，不再浪费 LLM token
+            if (result.getConfirmed() == null || result.getConfirmed().isEmpty()) {
+                zeroConfirmedStreak++;
+            } else {
+                zeroConfirmedStreak = 0;
+            }
+            if (zeroConfirmedStreak >= 2) {
+                log.info("Module '{}': 0 findings for {} consecutive rounds, forcing done ({} total)",
+                        group.name, zeroConfirmedStreak, allConfirmed.size());
+                break;
+            }
+
             // done=true 或没有 grep 请求 → 结束
             if (result.isDone() || result.getGrepRequests() == null || result.getGrepRequests().isEmpty()) {
                 log.info("Module '{}': done after {} rounds, {} total findings",
@@ -2116,17 +2143,39 @@ public class CodeReviewAiService {
                 break;
             }
 
-            // 限制本轮 grep 数量
-            List<GrepRequest> requests = result.getGrepRequests();
-            if (requests.size() > maxGrepPerRound) {
-                log.warn("Module '{}': {} grep requests exceeds limit {}, truncating",
-                        group.name, requests.size(), maxGrepPerRound);
-                requests = requests.subList(0, maxGrepPerRound);
+            // 限制本轮 grep 数量（后期降速：剩余 ≤3 轮时上限减半）
+            int effectiveMaxGrep = maxGrepPerRound;
+            int remaining = maxGrepRounds - round;
+            if (remaining <= 3) {
+                effectiveMaxGrep = Math.max(1, maxGrepPerRound / 2);
+                log.info("Module '{}': {} rounds left, reducing grep limit from {} to {}",
+                        group.name, remaining, maxGrepPerRound, effectiveMaxGrep);
             }
+            List<GrepRequest> requests = result.getGrepRequests();
+            if (requests.size() > effectiveMaxGrep) {
+                log.warn("Module '{}': {} grep requests exceeds limit {}, truncating",
+                        group.name, requests.size(), effectiveMaxGrep);
+                requests = requests.subList(0, effectiveMaxGrep);
+            }
+
+            // 去重：跳过已 grep 过的符号
+            List<GrepRequest> deduped = new ArrayList<>();
+            for (GrepRequest req : requests) {
+                String key = req.getSymbol() != null ? req.getSymbol().trim() : "";
+                if (!key.isEmpty() && !greppedSymbols.add(key)) {
+                    continue;  // 已查过
+                }
+                deduped.add(req);
+            }
+            if (deduped.size() < requests.size()) {
+                log.info("Module '{}': {} grep requests → {} after dedup ({} already searched)",
+                        group.name, requests.size(), deduped.size(), requests.size() - deduped.size());
+            }
+            requests = deduped;
 
             // 执行 grep，构建下一轮 user message
             String grepResults = grepTracer.executeRequests(repoPath, requests);
-            int remaining = maxGrepRounds - round - 1;
+            remaining = maxGrepRounds - round - 1;
             userMessage = buildGrepRoundMessage(grepResults, remaining);
         }
 
@@ -2163,7 +2212,6 @@ public class CodeReviewAiService {
         sb.append("  \"grep_requests\": [\n");
         sb.append("    {\n");
         sb.append("      \"symbol\": \"类名.方法名\",\n");
-        sb.append("      \"file\": \"文件路径（可选，有则直接读取该文件的方法体）\",\n");
         sb.append("      \"reason\": \"为什么要看这段代码\"\n");
         sb.append("    }\n");
         sb.append("  ],\n");
@@ -2173,9 +2221,8 @@ public class CodeReviewAiService {
         // grep 使用规则（含硬规则，合并版本）
         sb.append("## grep 使用规则\n");
         sb.append("- 不确定 → **必须**先通过 grep_requests 查看相关代码再下结论，不要猜测\n");
-        sb.append("- grep_requests 每轮最多 ").append(maxGrepPerRound).append(" 个，symbol 填 类名.方法名（如 UserRepository.findById）\n");
-        sb.append("  - file 可选，填了会直接读取该方法体（含注解和 JavaDoc）\n");
-        sb.append("  - 不填 file 会全局 grep 搜索该符号的所有重载\n");
+        sb.append("- grep_requests 每轮最多 ").append(maxGrepPerRound).append(" 个，symbol 填 类名.方法名（如 UserRepository.findById），系统会自动定位源码（CRG 精准解析 → 回退全文 grep）\n");
+        sb.append("  - **⚠️ 不要填 file 字段** — 系统会通过 CRG 自动定位源码，填了路径不准反而会导致回退搜索变慢\n");
         sb.append("- done=true 表示审查完毕；确定没问题则 confirmed=[] 且 done=true\n");
         sb.append("- 每个 finding 只报告一个问题\n\n");
         sb.append("**以下类型必须先 grep 确认再输出**：\n");
@@ -2304,6 +2351,104 @@ public class CodeReviewAiService {
         sb.append("2. 如需更多上下文，输出 grep_requests（每轮最多 ").append(maxGrepPerRound).append(" 个）\n");
         sb.append("3. 全部确认完毕，设 done=true\n");
         return sb.toString();
+    }
+
+    /**
+     * 从第一轮完整源码消息中提取方法签名摘要，替换完整源码以大幅减少后续轮次的 token 消耗。
+     *
+     * <p>输出格式：每个文件列出方法签名行和关键注解，LLM 可以据此决定是否需要 grep。
+     */
+    private String buildMethodSignatureSummary(String firstRoundMessage) {
+        StringBuilder sb = new StringBuilder();
+        String[] sections = firstRoundMessage.split("\n### ");
+
+        for (int i = 0; i < sections.length; i++) {
+            String section = sections[i];
+            if (i == 0) {
+                // Header section: project info + module info
+                sb.append(section).append("\n");
+                sb.append("> ⚠️ 完整代码已在第一轮发送，下方只保留方法签名摘要。如需查看方法体，请发出 grep 请求。\n\n");
+                continue;
+            }
+            if (section.startsWith("架构上下文") || section.startsWith("## 架构")) {
+                sb.append("### ").append(section).append("\n");
+                continue;
+            }
+            // File section: "filePath\n```java\n...code...\n```"
+            String[] parts = section.split("\n```java\n", 2);
+            if (parts.length < 2) {
+                sb.append("### ").append(section).append("\n");
+                continue;
+            }
+            String filePath = parts[0].trim();
+            String code = parts[1];
+            int endIdx = code.lastIndexOf("\n```");
+            if (endIdx > 0) code = code.substring(0, endIdx);
+
+            List<String> sigs = extractMethodSignatures(code);
+            sb.append("### ").append(filePath)
+                    .append(" (").append(sigs.size()).append(" methods)\n");
+            for (String sig : sigs) {
+                sb.append("  - ").append(sig).append("\n");
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 从 Java 源码片段中提取方法签名（含关键注解如 @Transactional/@Async）。
+     * 仅用于摘要展示，不要求精确解析。
+     */
+    private List<String> extractMethodSignatures(String javaCode) {
+        List<String> sigs = new ArrayList<>();
+        String[] lines = javaCode.split("\n");
+        String pendingAnnotation = null;
+
+        for (int i = 0; i < lines.length; i++) {
+            String trimmed = lines[i].trim();
+            if (trimmed.isEmpty()) continue;
+
+            // 收集关键注解
+            if (trimmed.startsWith("@") && (trimmed.contains("Transactional") || trimmed.contains("Async")
+                    || trimmed.contains("Override") || trimmed.contains("Cacheable") || trimmed.contains("DS")
+                    || trimmed.contains("Scheduled") || trimmed.contains("Validated"))) {
+                pendingAnnotation = trimmed;
+                continue;
+            }
+
+            // 匹配 Java 方法签名：修饰符 + 返回类型 + 方法名(参数) { 或 throws
+            if (trimmed.matches("^(public|private|protected|static|synchronized|final|abstract|native).*\\(.*\\).*\\{.*")
+                    || trimmed.matches("^(public|private|protected|static|synchronized|final|abstract|native).*\\(.*\\)\\s*$")
+                    || trimmed.matches("^(public|private|protected|static|synchronized|final|abstract|native).*\\(.*\\)\\s*throws.*")) {
+
+                String sig = trimmed;
+                // 合并多行签名（参数换行）
+                while (i + 1 < lines.length && !sig.contains("{") && !sig.contains(";")
+                        && !lines[i + 1].trim().startsWith("@") && !lines[i + 1].trim().startsWith("//")) {
+                    String next = lines[i + 1].trim();
+                    if (next.isEmpty()) break;
+                    sig += " " + next;
+                    i++;
+                }
+
+                // 去掉 { 及之后的内容
+                int braceIdx = sig.indexOf('{');
+                if (braceIdx > 0) sig = sig.substring(0, braceIdx).trim();
+                // 去掉结尾分号
+                if (sig.endsWith(";")) sig = sig.substring(0, sig.length() - 1).trim();
+
+                if (pendingAnnotation != null) {
+                    sig = pendingAnnotation + " " + sig;
+                    pendingAnnotation = null;
+                }
+
+                sigs.add(sig);
+            } else {
+                pendingAnnotation = null;
+            }
+        }
+        return sigs;
     }
 
     /**

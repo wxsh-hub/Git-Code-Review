@@ -97,7 +97,8 @@ public class GrepTracer {
                 log.info("[GrepTracer CRG] '{}' -> {} chars in {}ms (via CRG)", symbol, crgResult.length(), elapsed);
                 return crgResult;
             }
-            log.debug("[GrepTracer CRG] '{}' no CRG result, falling back to grep ({}ms)", symbol, elapsed);
+            log.info("[GrepTracer] '{}' CRG miss, falling back. llmFile='{}' ({}ms)",
+                    symbol, filePath != null ? filePath : "", elapsed);
         } else {
             log.debug("[GrepTracer] CRG not enabled, using original grep for '{}'", symbol);
         }
@@ -111,6 +112,8 @@ public class GrepTracer {
         }
 
         // === fallback 2: grep 全量 symbol（如 "PtmWpgjService.getBusinessTypeName"）===
+        log.info("[GrepTracer] '{}' running shell grep (readFile miss or no filePath, llmFile='{}')",
+                symbol, filePath != null ? filePath : "");
         String grepResult = grepSearch(repoPath, symbol);
         if (grepResult != null && !grepResult.startsWith("(未找到")) {
             return grepResult;
