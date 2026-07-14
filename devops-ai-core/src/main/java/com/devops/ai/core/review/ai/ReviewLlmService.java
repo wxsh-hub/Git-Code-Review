@@ -58,17 +58,25 @@ public class ReviewLlmService {
     /** 并发线程数 */
     private static final int CONCURRENCY = 8;
 
-    /** evidence 上下文扩展行数 */
-    private static final int CONTEXT_MARGIN = 15;
+    /** evidence 上下文扩展行数（扩大到 30 行以覆盖类级 JavaDoc 和注解） */
+    private static final int CONTEXT_MARGIN = 30;
 
     private static final String SYSTEM_PROMPT =
             "你是一个资深的代码审查专家。请独立判断以下代码是否存在真实缺陷，" +
             "并输出严格的 JSON 格式评估结果。\n\n" +
-            "判断标准：\n" +
+            "## 判断标准\n" +
             "1. 区分「代码缺陷」和「代码风格/设计偏好」——风格问题不是缺陷\n" +
             "2. 区分「代码缺陷」和「需求变更后的代码」——被修改的代码不一定是 bug\n" +
             "3. 判断严重度时从风险角度考虑：是否会导致线上故障、数据丢失或安全漏洞\n" +
-            "4. diff 模式只能看到变更部分，未变更代码不可见 —— 不要因为「没看到定义」就判定不存在\n\n" +
+            "4. diff 模式只能看到变更部分，未变更代码不可见 —— 不要因为「没看到定义」就判定不存在\n" +
+            "5. 注释/JavaDoc 已声明原因（类级或方法级）→ 开发者已考虑过此问题，不是缺陷\n\n" +
+            "## grep 查看补充上下文（最多使用一次）\n" +
+            "如果代码片段信息不足、无法做出可靠判断，你**必须**在 JSON 中附带一个 grep 请求来查看关联代码，" +
+            "而不是直接放弃或返回空。grep 会返回方法的完整实现（含注解和 JavaDoc）。\n" +
+            "格式：在 JSON 中增加 \"grep\": { \"symbol\": \"类名.方法名\", \"file\": \"相对路径（可选）\", \"reason\": \"为什么需要查看\" }\n" +
+            "示例：需要确认类上是否有 @Transactional 注解 → \"grep\": { \"symbol\": \"DataSyncServiceImpl.syncFull\", \"reason\": \"查看类级 JavaDoc 和注解\" }\n" +
+            "系统收到 grep 后会执行并再次调用你，届时必须输出最终评估结果，不得再次请求 grep。\n\n" +
+            "## 输出格式\n" +
             "输出必须是合法 JSON，不要包含 markdown 代码块标记：\n" +
             "{\n" +
             "  \"confidence\": 0.82,\n" +
@@ -77,15 +85,22 @@ public class ReviewLlmService {
             "  \"reason\": \"findById 返回 null 后未做检查直接调用 getName\",\n" +
             "  \"trigger\": \"当传入的 id 在数据库中不存在时\",\n" +
             "  \"suggestedFix\": \"用 Optional.ofNullable(user).orElseThrow(...) 包装\"\n" +
-            "}\n\n" +
-            "confidence 评分规则：\n" +
+            "}\n" +
+            "如需 grep，在以上 JSON 中增加 \"grep\" 字段即可。\n\n" +
+            "## ⛔ 强制规则：即使证据不足也必须输出 JSON\n" +
+            "- 无论信息是否充分，**必须**输出上述格式的 JSON 对象，不得返回空响应\n" +
+            "- 证据充分 → confidence 按实际情况打分（0.85+ 确证）\n" +
+            "- 证据不足且无法 grep → confidence ≤ 0.70，在 reason 中说明不确定性\n" +
+            "- 证据不足但可以通过 grep 查 → 先发 grep 请求，拿到结果后再出最终评估\n\n" +
+            "## confidence 评分规则\n" +
             "- 使用精确的小数值（如 0.87、0.63、0.91），不要四舍五入到 0.05 的整数倍\n" +
             "- 这个分数代表你对该问题「确实是缺陷」的把握程度\n" +
-            "- 0.85+ = 几乎确定是缺陷（有明确代码证据，diff 中就能证实）\n" +
-            "- 0.70-0.84 = 有缺陷趋势/特征，但从 diff 无法完全证实（如代码模式可疑但缺少上下文）\n" +
+            "- 0.85+ = 几乎确定是缺陷（有明确代码证据，代码上下文中就能证实）\n" +
+            "- 0.70-0.84 = 有缺陷趋势/特征，但从代码上下文无法完全证实\n" +
             "- 0.50-0.69 = 可能是缺陷或设计不佳（需要较多推测、有不确定性）\n" +
             "- 0.30-0.49 = 大概率不是缺陷（纯猜测/不确定/「可能有风险」/「建议检查」→ 给这个分数）\n" +
-            "- **如果你在 reason 中写了「可能」「也许」「不确定」「需要验证」「建议检查」「不清楚」，confidence 必须 ≤ 0.70**";
+            "- **如果你在 reason 中写了「可能」「也许」「不确定」「需要验证」「建议检查」「不清楚」，confidence 必须 ≤ 0.70**\n" +
+            "- **猜测性判断（含「若」「可能」「假设」「建议检查」且无确凿代码证据）→ confidence ≤ 0.60，不要硬报**";
 
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
@@ -200,8 +215,82 @@ public class ReviewLlmService {
         String userPrompt = buildUserPrompt(f, repoPath);
         log.debug("Calling review LLM for finding {} ({} lines {}-{})",
                 f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
-        return llmClient.call(provider, apiKey, apiUrl, model,
+
+        // 第一轮：LLM 可能输出最终 JSON，也可能请求 grep
+        String firstResponse = llmClient.call(provider, apiKey, apiUrl, model,
                 SYSTEM_PROMPT, userPrompt, 1024, 0.0, "json_object");
+
+        // 检查是否包含 grep 请求
+        GrepRequest grepReq = extractGrepRequest(firstResponse);
+        if (grepReq == null) {
+            return firstResponse;
+        }
+
+        // 执行 grep 获取补充上下文
+        log.info("Review LLM requested grep for finding {}: symbol={}, reason={}",
+                f.getId(), grepReq.symbol, grepReq.reason);
+        String grepResult = executeGrepForReview(grepReq, repoPath);
+
+        // 第二轮：追加 grep 结果，要求输出最终评估
+        StringBuilder followUp = new StringBuilder(userPrompt);
+        followUp.append("\n\n--- grep 结果（你请求的补充上下文）---\n");
+        followUp.append(grepResult);
+        followUp.append("\n\n请基于以上 grep 结果和原始代码上下文，输出最终的 JSON 评估。");
+        followUp.append("不得再次请求 grep。");
+
+        return llmClient.call(provider, apiKey, apiUrl, model,
+                SYSTEM_PROMPT, followUp.toString(), 1024, 0.0, "json_object");
+    }
+
+    /**
+     * 从 LLM 响应中提取 grep 请求（如果有）。
+     *
+     * @param response LLM 返回的 JSON 字符串
+     * @return GrepRequest，无 grep 请求时返回 null
+     */
+    private GrepRequest extractGrepRequest(String response) {
+        if (response == null || response.trim().isEmpty()) return null;
+        try {
+            String json = extractJson(response);
+            if (json.isEmpty()) return null;
+            JsonNode root = MAPPER.readTree(json);
+            if (root.has("grep") && !root.get("grep").isNull()) {
+                JsonNode grepNode = root.get("grep");
+                String symbol = grepNode.has("symbol") ? grepNode.get("symbol").asText() : null;
+                if (symbol == null || symbol.trim().isEmpty()) return null;
+                GrepRequest req = new GrepRequest();
+                req.symbol = symbol.trim();
+                req.file = grepNode.has("file") ? grepNode.get("file").asText() : null;
+                req.reason = grepNode.has("reason") ? grepNode.get("reason").asText() : null;
+                return req;
+            }
+        } catch (Exception e) {
+            // JSON 解析失败说明不是 grep 请求，返回 null 走正常的解析流程
+        }
+        return null;
+    }
+
+    /**
+     * 执行 review LLM 请求的 grep 查询，复用 GrepTracer。
+     *
+     * @param req      grep 请求
+     * @param repoPath 仓库根路径
+     * @return grep 结果文本，失败时返回错误说明
+     */
+    private String executeGrepForReview(GrepRequest req, String repoPath) {
+        if (grepTracer == null) {
+            return "(grep 不可用：GrepTracer 未注入)";
+        }
+        try {
+            String result = grepTracer.search(repoPath, req.symbol, req.file);
+            if (result == null || result.isEmpty()) {
+                return "(grep 未找到结果: " + req.symbol + ")";
+            }
+            return result;
+        } catch (Exception e) {
+            log.warn("Review LLM grep failed for {}: {}", req.symbol, e.getMessage());
+            return "(grep 失败: " + e.getMessage() + ")";
+        }
     }
 
     /**
@@ -680,5 +769,12 @@ public class ReviewLlmService {
         String reason;
         String trigger;
         String suggestedFix;
+    }
+
+    /** review LLM 的 grep 请求 */
+    static class GrepRequest {
+        String symbol;   // 类名.方法名（如 DataSyncServiceImpl.syncFull）
+        String file;     // 相对路径（可选）
+        String reason;   // 为什么需要 grep
     }
 }
