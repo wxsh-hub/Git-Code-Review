@@ -242,9 +242,8 @@ public class ReviewLlmService {
         }
 
         // Phase 5: CRG 调用链上下文
-        if (crgClient != null && crgClient.isEnabled() && f.getSymbol() != null
-                && !f.getSymbol().isEmpty()) {
-            String crgContext = buildCrgCallChainContext(f.getSymbol());
+        if (f.getSymbol() != null && !f.getSymbol().isEmpty()) {
+            String crgContext = buildCrgCallChainContext(f.getSymbol(), repoPath);
             if (crgContext != null) {
                 sb.append("\n").append(crgContext);
             }
@@ -494,44 +493,50 @@ public class ReviewLlmService {
     /**
      * 为 review LLM 构建 CRG 调用链上下文，帮助做出更准确的置信度判断。
      *
-     * <p>查询包含：
-     * <ul>
-     *   <li>调用者列表（谁调用了这个方法）</li>
-     *   <li>被调用者列表（这个方法调用了谁）</li>
-     * </ul>
+     * <p>优先走 GrepTracer（返回调用者 + 被调用者 + 方法体，与主审查 LLM 一致），
+     * 不可用时 fallback 到直接 CRG 查询（仅名字）。</p>
      *
+     * @param symbol   方法符号（如 UserService.save）
+     * @param repoPath 仓库根路径
      * @return 格式化的调用链文本，CRG 不可用或查询失败时返回 null
      */
-    private String buildCrgCallChainContext(String symbol) {
+    private String buildCrgCallChainContext(String symbol, String repoPath) {
         try {
-            // 1.2 — 复用 GrepTracer 的符号解析逻辑，避免重复实现
-            String resolved = null;
+            // 优先走 GrepTracer：返回完整调用链 + 方法体（与主审查 LLM 信息量一致）
             if (grepTracer != null) {
-                resolved = grepTracer.resolveSymbolToCrgTarget(symbol);
+                String result = grepTracer.search(repoPath, symbol, null);
+                if (result != null && !result.isEmpty()
+                        && !result.startsWith("(未找到") && !result.startsWith("(grep")
+                        && !result.startsWith("(文件不存在") && !result.startsWith("(读取文件失败")) {
+                    return "调用链分析（CRG）:\n" + result;
+                }
+                log.debug("[CRG Review Context] GrepTracer returned no useful result for '{}', "
+                        + "falling back to direct CRG query", symbol);
             }
-            // fallback: GrepTracer 不可用时自己做简单解析
-            if (resolved == null && crgClient != null) {
-                String methodName = symbol.contains(".")
-                        ? symbol.substring(symbol.lastIndexOf('.') + 1)
-                        : symbol;
-                java.util.List<com.devops.ai.core.crg.CrgModels.CrgNode> candidates =
-                        crgClient.searchNodes(methodName, "Function", 10);
-                if (candidates != null && !candidates.isEmpty()) {
-                    if (symbol.contains(".")) {
-                        String className = symbol.substring(0, symbol.lastIndexOf('.'));
-                        String needle = className + "." + methodName;
-                        // W5: endsWith 精确匹配，避免包名前缀导致 contains 失败
-                        for (com.devops.ai.core.crg.CrgModels.CrgNode node : candidates) {
-                            String qn = node.getQualifiedName();
-                            if (qn != null && qn.endsWith(needle)) {
-                                resolved = qn;
-                                break;
-                            }
+
+            // fallback: GrepTracer 不可用或查询失败时，走原有 CRG 直接查询逻辑（仅名字）
+            if (crgClient == null || !crgClient.isEnabled()) return null;
+
+            String resolved = null;
+            String methodName = symbol.contains(".")
+                    ? symbol.substring(symbol.lastIndexOf('.') + 1)
+                    : symbol;
+            java.util.List<com.devops.ai.core.crg.CrgModels.CrgNode> candidates =
+                    crgClient.searchNodes(methodName, "Function", 10);
+            if (candidates != null && !candidates.isEmpty()) {
+                if (symbol.contains(".")) {
+                    String className = symbol.substring(0, symbol.lastIndexOf('.'));
+                    String needle = className + "." + methodName;
+                    for (com.devops.ai.core.crg.CrgModels.CrgNode node : candidates) {
+                        String qn = node.getQualifiedName();
+                        if (qn != null && qn.endsWith(needle)) {
+                            resolved = qn;
+                            break;
                         }
                     }
-                    if (resolved == null) {
-                        resolved = candidates.get(0).getQualifiedName();
-                    }
+                }
+                if (resolved == null) {
+                    resolved = candidates.get(0).getQualifiedName();
                 }
             }
             if (resolved == null) return null;
