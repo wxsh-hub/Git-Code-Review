@@ -1375,7 +1375,8 @@ public class CodeReviewAiService {
         sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除此 finding\n");
         sb.append("- 不会产生 bug 的不规范写法 → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR\n");
         sb.append("- **行号从第 1 行开始计数**，大文件截断后不要从截断点重新编号\n");
-        sb.append("- **必须检查所在方法/类的注解**（@Transactional/@Async/@Cacheable/@DS/@Scheduled 等），不要只看代码片段\n\n");
+        sb.append("- **必须检查所在方法/类的注解**（@Transactional/@Async/@Cacheable/@DS/@Scheduled 等），不要只看代码片段\n");
+        sb.append("- **注释/JavaDoc 已声明原因**（类级或方法级注释解释了为什么这样设计/存在）→ 开发者已考虑过此问题，不要报\n\n");
 
         // ===== S2: 分类优先级 =====
         sb.append("### 分类优先级\n");
@@ -1387,7 +1388,7 @@ public class CodeReviewAiService {
         sb.append("**P0 阻断**：\n");
         sb.append("- SECURITY：SQL注入（${}拼接）、XSS、权限绕过、反序列化、SSRF、路径穿越、XXE\n");
         sb.append("- SECRET_EXPOSURE：Java 代码中硬编码密码/Token/密钥（配置文件中的不算）\n");
-        sb.append("- TRANSACTION：写操作缺少 @Transactional（注意：MyBatis-Plus 的 saveBatch/removeByIds 等方法内置单次SQL，不需要外层事务）\n\n");
+        sb.append("- TRANSACTION：写操作缺少 @Transactional（注意：MyBatis-Plus 的 saveBatch/removeByIds 等方法内置单次SQL，不需要外层事务；批量作业遍历大量数据逐条处理 → per-item 原子性已足够，不应加整方法 @Transactional，超长事务反而有害）\n\n");
 
         sb.append("**P1 高危**：\n");
         sb.append("- NPE：返回值/参数/集合元素未判空；Optional.get() 无保护\n");
@@ -2178,7 +2179,7 @@ public class CodeReviewAiService {
         sb.append("- done=true 表示审查完毕；确定没问题则 confirmed=[] 且 done=true\n");
         sb.append("- 每个 finding 只报告一个问题\n\n");
         sb.append("**以下类型必须先 grep 确认再输出**：\n");
-        sb.append("1. **事务缺失** — 必须先确认：不是 MyBatis-Plus 内置方法、循环体操作确实需同一事务\n");
+        sb.append("1. **事务缺失** — 必须先确认：不是 MyBatis-Plus 内置方法、不是批量遍历逐条处理的作业方法、循环体操作确实需同一事务\n");
         sb.append("2. **并发问题** — 必须先确认：变量是类字段而非局部变量、确实有多线程场景\n");
         sb.append("3. **资源泄漏** — 必须先确认：无 try-with-resources 且无框架自动关闭（Hutool HttpRequest 自动管理连接）\n");
         sb.append("无法 grep 确认 → confidence ≤ 0.60\n\n");
@@ -2196,7 +2197,8 @@ public class CodeReviewAiService {
         sb.append("- 不规范但不会产生 bug → CODE_STYLE + LOW，不要归为 NPE/LOGIC_ERROR 等更高严重度\n");
         sb.append("- **行号从第 1 行开始计数**，截断后不从截断点重新编号\n");
         sb.append("- **必须检查所在方法/类的注解**（@Transactional/@Async/@Cacheable/@DS/@Scheduled 等），不要只看代码片段\n");
-        sb.append("- 字段有默认值（`Boolean x = true`）→ 不要报 NPE，反序列化时默认值会生效\n\n");
+        sb.append("- 字段有默认值（`Boolean x = true`）→ 不要报 NPE，反序列化时默认值会生效\n");
+        sb.append("- **注释/JavaDoc 已声明原因**（类级或方法级）→ 说明开发者已考虑过此问题，不要报\n\n");
 
         // 置信度
         sb.append("## 置信度\n");
@@ -2231,7 +2233,7 @@ public class CodeReviewAiService {
         sb.append("分类优先级：`SECRET_EXPOSURE > SECURITY > TRANSACTION > CONCURRENCY > NPE > RESOURCE_LEAK > ERROR_HANDLING > ARCHITECTURE > LOGIC_ERROR > PERFORMANCE > DEPENDENCY > HARDCODED > DEAD_CODE > CODE_STYLE > OTHER`\n");
         sb.append("举例：@DS 在接口上不生效 → LOGIC_ERROR（不是 CODE_STYLE）；硬编码密码 → SECRET_EXPOSURE（不是 HARDCODED）\n\n");
 
-        sb.append("**P0**：SECURITY（SQL注入/${}拼接/XSS/权限绕过/反序列化/SSRF/路径穿越）、TRANSACTION（写操作缺 @Transactional，注意 MyBatis-Plus 内置方法不需要外层事务）、SECRET_EXPOSURE（Java 代码中硬编码密码/Token/密钥，配置文件中的不算）\n\n");
+        sb.append("**P0**：SECURITY（SQL注入/${}拼接/XSS/权限绕过/反序列化/SSRF/路径穿越）、TRANSACTION（写操作缺 @Transactional，注意 MyBatis-Plus 内置方法不需要外层事务、批量遍历逐条处理的作业方法 per-item 原子性已足够）、SECRET_EXPOSURE（Java 代码中硬编码密码/Token/密钥，配置文件中的不算）\n\n");
 
         sb.append("**P1**：NPE（未判空就使用）、CONCURRENCY（共享变量无线程安全、HashMap 误用）、RESOURCE_LEAK（未 try-with-resources 关闭）、ERROR_HANDLING（空 catch/吞异常/finally 中 return）、ARCHITECTURE（循环依赖/Controller 直接调 DAO/重复 MyBatis statement ID/重复 Bean 定义）、LOGIC_ERROR（条件错误/边界未处理/注解放错位置不生效）\n\n");
 
