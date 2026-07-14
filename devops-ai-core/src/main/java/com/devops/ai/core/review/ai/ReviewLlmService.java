@@ -84,9 +84,12 @@ public class ReviewLlmService {
             "  \"category\": \"NPE\",\n" +
             "  \"reason\": \"findById 返回 null 后未做检查直接调用 getName\",\n" +
             "  \"trigger\": \"当传入的 id 在数据库中不存在时\",\n" +
-            "  \"suggestedFix\": \"用 Optional.ofNullable(user).orElseThrow(...) 包装\"\n" +
+            "  \"suggestedFix\": \"用 Optional.ofNullable(user).orElseThrow(...) 包装\",\n" +
+            "  \"grep\": null\n" +
             "}\n" +
-            "如需 grep，在以上 JSON 中增加 \"grep\" 字段即可。\n\n" +
+            "- grep 为 null 时表示不需要补充上下文，直接给出最终评估\n" +
+            "- 信息不足时填入 grep 对象：{ \"symbol\": \"类名.方法名\", \"reason\": \"为什么需要查看\" }，可选 \"file\" 字段\n" +
+            "- 系统收到 grep 后会执行并再次调用你，届时**必须**输出最终评估，grep 置为 null 且不得再次请求\n\n" +
             "## ⛔ 强制规则：即使证据不足也必须输出 JSON\n" +
             "- 无论信息是否充分，**必须**输出上述格式的 JSON 对象，不得返回空响应\n" +
             "- 证据充分 → confidence 按实际情况打分（0.85+ 确证）\n" +
@@ -177,6 +180,9 @@ public class ReviewLlmService {
                         }
                         reviewed.incrementAndGet();
                     } else {
+                        log.warn("Review LLM failed to produce usable output for finding {} (file {}, lines {}-{}): {}",
+                                f.getId(), f.getFile(), f.getStartLine(), f.getEndLine(),
+                                response == null ? "(null)" : "len=" + response.length() + " not parseable JSON");
                         failed.incrementAndGet();
                     }
                 } catch (Exception e) {
@@ -216,9 +222,22 @@ public class ReviewLlmService {
         log.debug("Calling review LLM for finding {} ({} lines {}-{})",
                 f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
 
-        // 第一轮：LLM 可能输出最终 JSON，也可能请求 grep
+        // 第一轮：json_object 模式
         String firstResponse = llmClient.call(provider, apiKey, apiUrl, model,
                 SYSTEM_PROMPT, userPrompt, 1024, 0.0, "json_object");
+
+        // json_object 模式下，部分模型遇到 schema 外字段(grep)时会返回空 — 降级重试
+        if (firstResponse == null || firstResponse.trim().isEmpty()) {
+            log.warn("Review LLM returned empty in json_object mode, retrying without json_object (finding {})",
+                    f.getId());
+            firstResponse = llmClient.call(provider, apiKey, apiUrl, model,
+                    SYSTEM_PROMPT, userPrompt, 1024, 0.0, null);
+            // 重试后仍然空 — 记录并让上层兜底
+            if (firstResponse == null || firstResponse.trim().isEmpty()) {
+                log.warn("Review LLM still returned empty after retry (finding {}, file {}, lines {}-{})",
+                        f.getId(), f.getFile(), f.getStartLine(), f.getEndLine());
+            }
+        }
 
         // 检查是否包含 grep 请求
         GrepRequest grepReq = extractGrepRequest(firstResponse);
@@ -231,15 +250,22 @@ public class ReviewLlmService {
                 f.getId(), grepReq.symbol, grepReq.reason);
         String grepResult = executeGrepForReview(grepReq, repoPath);
 
-        // 第二轮：追加 grep 结果，要求输出最终评估
+        // 第二轮：追加 grep 结果，要求输出最终评估（不再用 json_object，避免 grep→null 结构变动触发空返回）
         StringBuilder followUp = new StringBuilder(userPrompt);
         followUp.append("\n\n--- grep 结果（你请求的补充上下文）---\n");
         followUp.append(grepResult);
         followUp.append("\n\n请基于以上 grep 结果和原始代码上下文，输出最终的 JSON 评估。");
-        followUp.append("不得再次请求 grep。");
+        followUp.append("grep 必须为 null，不得再次请求 grep。");
 
-        return llmClient.call(provider, apiKey, apiUrl, model,
-                SYSTEM_PROMPT, followUp.toString(), 1024, 0.0, "json_object");
+        String secondResponse = llmClient.call(provider, apiKey, apiUrl, model,
+                SYSTEM_PROMPT, followUp.toString(), 1024, 0.0, null);
+
+        if (secondResponse == null || secondResponse.trim().isEmpty()) {
+            log.warn("Review LLM second round returned empty for finding {}, falling back to first grep request",
+                    f.getId());
+            return firstResponse;
+        }
+        return secondResponse;
     }
 
     /**
