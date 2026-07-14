@@ -515,7 +515,7 @@ public class CodeReviewAiService {
                 if (content.length() > 4000) {
                     content = content.substring(0, 4000) + "\n... [truncated]";
                 }
-                sb.append("```java\n").append(content).append("\n```\n\n");
+                sb.append("```java\n").append(prependLineNumbers(content)).append("\n```\n\n");
             }
         }
 
@@ -1011,7 +1011,7 @@ public class CodeReviewAiService {
                         + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
             }
             prompt.append("### ").append(diff.getFilePath()).append("\n");
-            prompt.append("```java\n").append(content).append("\n```\n\n");
+            prompt.append("```java\n").append(prependLineNumbers(content)).append("\n```\n\n");
         }
 
         // 如果有模块摘要，简要注入
@@ -1286,7 +1286,7 @@ public class CodeReviewAiService {
                     content = content.substring(0, maxSourceChars)
                             + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
                 }
-                sb.append("```java\n").append(content).append("\n```\n\n");
+                sb.append("```java\n").append(prependLineNumbers(content)).append("\n```\n\n");
             }
         }
 
@@ -1334,7 +1334,7 @@ public class CodeReviewAiService {
                     content = content.substring(0, maxSourceChars)
                             + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
                 }
-                sb.append("```java\n").append(content).append("\n```\n\n");
+                sb.append("```java\n").append(prependLineNumbers(content)).append("\n```\n\n");
             } else {
                 sb.append("（文件内容为空或无法读取）\n\n");
             }
@@ -1806,7 +1806,7 @@ public class CodeReviewAiService {
                 if (diff.getUnifiedDiff() != null && diff.getUnifiedDiff().length() < 5000) {
                     sb.append("```diff\n").append(diff.getUnifiedDiff()).append("\n```\n\n");
                 } else if (diff.getNewContent() != null) {
-                    sb.append("```java\n").append(truncate(diff.getNewContent(), 3000)).append("\n```\n\n");
+                    sb.append("```java\n").append(prependLineNumbers(truncate(diff.getNewContent(), 3000))).append("\n```\n\n");
                 }
             }
         }
@@ -1998,6 +1998,22 @@ public class CodeReviewAiService {
             if (content.charAt(i) == '\n') count++;
         }
         return count;
+    }
+
+    /**
+     * 给源码每行加上行号前缀，LLM 直接引用真实行号无需手动数。
+     * 行号从 1 开始对应原始文件第一行。截断后行号仍是真实行号。
+     */
+    private String prependLineNumbers(String content) {
+        if (content == null || content.isEmpty()) return "";
+        String[] lines = content.split("\n", -1);
+        StringBuilder sb = new StringBuilder(content.length() + lines.length * 8);
+        int width = String.valueOf(lines.length).length();
+        if (width < 4) width = 4;
+        for (int i = 0; i < lines.length; i++) {
+            sb.append(String.format("%" + width + "d | ", i + 1)).append(lines[i]).append("\n");
+        }
+        return sb.toString();
     }
 
     // ================================================================
@@ -2262,7 +2278,7 @@ public class CodeReviewAiService {
                     content = content.substring(0, maxSourceChars)
                             + "\n... [truncated, total " + diff.getNewContent().length() + " chars]";
                 }
-                sb.append("```java\n").append(content).append("\n```\n\n");
+                sb.append("```java\n").append(prependLineNumbers(content)).append("\n```\n\n");
             }
         }
 
