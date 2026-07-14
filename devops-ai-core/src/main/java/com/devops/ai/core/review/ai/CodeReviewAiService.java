@@ -48,7 +48,6 @@ public class CodeReviewAiService {
     private final LlmClient llmClient;
     private final AiConfigRepository aiConfigRepository;
     private final ConfigEncryptor configEncryptor;
-    private final OcrmcpClient ocrmcpClient;
     private final FindingBlameTracer findingBlameTracer;
     private final ReviewLlmService reviewLlmService;
     private final SecretDetector secretDetector;
@@ -56,20 +55,11 @@ public class CodeReviewAiService {
     private final GrepTracer grepTracer;
     private final CrgClient crgClient;
 
-    @Value("${ocr.fallback-on-error:true}")
-    private boolean ocrFallbackOnError;
-
     @Value("${ocr.scan-concurrency:4}")
     private int scanConcurrency;
 
-    @Value("${ocr.scan-batch-size:20}")
-    private int scanBatchSize;
-
     @Value("${ocr.deep-scan.max-source-chars:12000}")
     private int maxSourceChars;
-
-    @Value("${ocr.deep-scan.retry-count:1}")
-    private int retryCount;
 
     @Value("${ocr.deep-scan.max-chunk-chars:30000}")
     private int maxChunkChars;
@@ -83,7 +73,7 @@ public class CodeReviewAiService {
     private static final int MAX_FORMAT_RETRIES = 2;
 
     public CodeReviewAiService(LlmClient llmClient, AiConfigRepository aiConfigRepository,
-                               ConfigEncryptor configEncryptor, OcrmcpClient ocrmcpClient,
+                               ConfigEncryptor configEncryptor,
                                FindingBlameTracer findingBlameTracer,
                                ReviewLlmService reviewLlmService,
                                SecretDetector secretDetector, FindingVerifier findingVerifier,
@@ -91,7 +81,6 @@ public class CodeReviewAiService {
         this.llmClient = llmClient;
         this.aiConfigRepository = aiConfigRepository;
         this.configEncryptor = configEncryptor;
-        this.ocrmcpClient = ocrmcpClient;
         this.findingBlameTracer = findingBlameTracer;
         this.reviewLlmService = reviewLlmService;
         this.secretDetector = secretDetector;
@@ -101,22 +90,49 @@ public class CodeReviewAiService {
     }
 
     // ================================================================
-    // 主入口：优先 OCR，自动 fallback
+    // 主入口
     // ================================================================
 
     public CodeReviewResult review(CodeReviewContext context) {
         try {
-            if (!ocrmcpClient.isAvailable()) {
-                log.info("OCR not available, falling back to legacy review");
+            List<FileDiff> diffs = context.getFileDiffs();
+
+            // Step 1: 文件预筛选
+            List<FileDiff> filtered = preFilter(diffs);
+
+            Set<String> moduleSet = new LinkedHashSet<>();
+            List<Finding> allFindings = new ArrayList<>();
+
+            // Step 2: 按模式审查
+            if (context.getSinceHash() != null && context.getUntilHash() != null) {
+                // diff 模式：按模块分组，每组一次 LLM 调用（打包该组所有 diff）
+                List<Finding> findings = reviewDiffByModule(filtered, context);
+                for (Finding f : findings) {
+                    if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
+                }
+                allFindings.addAll(findings);
+                log.info("Diff review complete: {} findings from {} files", findings.size(), filtered.size());
+            } else if (context.isUseOcrDeepScan()) {
+                // scan 模式（无 hash 范围）：深度扫描按模块分组
+                List<Finding> findings = reviewDeepScanByModule(filtered, context);
+                for (Finding f : findings) {
+                    if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
+                }
+                allFindings.addAll(findings);
+                log.info("Deep scan complete: {} findings from {} files", findings.size(), filtered.size());
+            } else {
+                // 无 hash 范围且未开深度扫描：不应该到达这里（Orchestrator 会设置 root..HEAD hash）
+                log.info("Scan mode without deep scan flag — falling back to legacy");
                 return reviewLegacy(context);
             }
-            return reviewWithOcr(context);
+
+            // Step 3: 后处理管线
+            allFindings = runPipeline(allFindings, context);
+
+            return buildResultFromFindings(allFindings, moduleSet.size(), context);
         } catch (Exception e) {
-            log.error("OCR review failed, falling back to legacy: {}", e.getMessage(), e);
-            if (ocrFallbackOnError) {
-                return reviewLegacy(context);
-            }
-            throw new AiServiceException("OCR review failed", e);
+            log.error("Code review failed, falling back to legacy: {}", e.getMessage(), e);
+            return reviewLegacy(context);
         }
     }
 
@@ -150,57 +166,6 @@ public class CodeReviewAiService {
             this.files = files;
             this.background = background;
         }
-    }
-
-    // ================================================================
-    // OCR 路径（三步流水线）
-    // ================================================================
-
-    private CodeReviewResult reviewWithOcr(CodeReviewContext context) throws Exception {
-        List<FileDiff> diffs = context.getFileDiffs();
-
-        // Step 1: 文件预筛选
-        List<FileDiff> filtered = preFilter(diffs);
-
-        // 模块计数（for buildResultFromFindings）
-        Set<String> moduleSet = new LinkedHashSet<>();
-
-        // Step 2+3: 调用 OCR MCP → 转换为 Finding
-        List<Finding> allFindings = new ArrayList<>();
-
-        if (context.getSinceHash() != null && context.getUntilHash() != null) {
-            // diff 模式：按模块分组，每组一次 LLM 调用（打包该组所有 diff）。
-            // 相比 OCR code_review_diff（逐文件 Plan+Main = 276 次 LLM 调用），
-            // 此方式只需 5-7 次 LLM 调用，速度接近 legacy 但输出结构化 JSON，
-            // 完整保留 blame → crossValidate → secret → verify 后处理管线。
-            List<Finding> findings = reviewDiffByModule(filtered, context);
-            for (Finding f : findings) {
-                if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
-            }
-            allFindings.addAll(findings);
-            log.info("Diff review complete: {} findings from {} files", findings.size(), filtered.size());
-        } else {
-            // scan 模式（无 hash 范围）：深度扫描按模块分组，每模块一次 LLM 调用
-            if (context.isUseOcrDeepScan()) {
-                List<Finding> findings = reviewDeepScanByModule(filtered, context);
-                for (Finding f : findings) {
-                    if (f.getModuleName() != null) moduleSet.add(f.getModuleName());
-                }
-                allFindings.addAll(findings);
-                log.info("Deep scan complete: {} findings from {} files", findings.size(), filtered.size());
-            } else {
-                // 无 hash 范围且未开深度扫描：不应该到达这里（Orchestrator 会设置 root..HEAD hash）
-                // 但保留 legacy 作为兜底
-                log.info("Scan mode without deep scan flag — falling back to legacy");
-                return reviewLegacy(context);
-            }
-        }
-
-        // 后处理管线
-        allFindings = runPipeline(allFindings, context);
-
-        // 构建 CodeReviewResult（兼容旧接口）
-        return buildResultFromFindings(allFindings, moduleSet.size(), context);
     }
 
     // ================================================================
@@ -689,141 +654,6 @@ public class CodeReviewAiService {
             }
         }
         return -1;
-    }
-
-    /**
-     * 对一个业务链路组调用 OCR MCP 审查，产出 Finding 列表。
-     */
-    List<Finding> reviewGroup(ReviewGroup group, CodeReviewContext context) throws Exception {
-        // 确定 tool 名称
-        String toolName;
-        Map<String, Object> args = new HashMap<>();
-        args.put("repo_dir", context.getRepoPath() != null ? context.getRepoPath() : "");
-        args.put("background", group.background);
-        if (getModel() != null && !getModel().isEmpty()) {
-            args.put("model", getModel());
-        }
-
-        // 拼装该组的文件路径列表
-        String paths = group.files.stream()
-                .map(FileDiff::getFilePath)
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining(","));
-        if (paths.isEmpty()) {
-            log.warn("Group '{}': no valid file paths, skipping review", group.name);
-            return Collections.emptyList();
-        }
-        args.put("path", paths);
-
-        if (context.getSinceHash() != null && context.getUntilHash() != null) {
-            toolName = "code_review_diff";
-            args.put("from", context.getSinceHash());
-            args.put("to", context.getUntilHash());
-        } else {
-            toolName = "code_scan";
-        }
-
-        log.info("Reviewing group '{}': tool={}, {} files, path sample: {}",
-                group.name, toolName, group.files.size(),
-                paths.length() > 80 ? paths.substring(0, 80) + "..." : paths);
-
-        String ocrJson = ocrmcpClient.callTool(toolName, args);
-        OcrReviewResponse ocrResult = MAPPER.readValue(ocrJson, OcrReviewResponse.class);
-
-        // OcrComment → Finding 转换
-        List<Finding> findings = new ArrayList<>();
-        List<OcrComment> comments = ocrResult.getComments();
-        if (comments != null) {
-            for (OcrComment cm : comments) {
-                Finding f = Finding.fromOcrComment(cm);
-                f.setModuleName(group.name); // Phase 8 模块趋势页聚合键
-                findings.add(f);
-            }
-        }
-
-        log.info("Group '{}': {} ocr comments → {} findings", group.name,
-                comments != null ? comments.size() : 0, findings.size());
-        return findings;
-    }
-
-    // ================================================================
-    // 深度扫描：分批 + code_scan
-    // ================================================================
-
-    /**
-     * 将过滤后的文件按模块分组，再按 batchSize 拆分为批次。
-     * 优先保持同模块文件在一起，大模块才切分到多个批次。
-     */
-    List<List<FileDiff>> splitIntoBatches(List<FileDiff> diffs, CodeReviewContext context, int batchSize) {
-        Map<String, ReviewGroup> groups = groupByBusinessLink(diffs, context);
-        List<List<FileDiff>> batches = new ArrayList<>();
-
-        for (ReviewGroup group : groups.values()) {
-            List<FileDiff> files = group.files;
-            if (files.size() <= batchSize) {
-                batches.add(files);
-            } else {
-                for (int i = 0; i < files.size(); i += batchSize) {
-                    batches.add(new ArrayList<>(files.subList(i, Math.min(i + batchSize, files.size()))));
-                }
-            }
-        }
-        log.info("Split {} files into {} batches (max {} per batch, {} modules)",
-                diffs.size(), batches.size(), batchSize, groups.size());
-        return batches;
-    }
-
-    /**
-     * 对一个批次的文件调用 OCR code_scan。
-     * background 中附带同批次文件列表，弥补 LLM 看不到其他批次文件的上下文损失。
-     */
-    List<Finding> reviewBatch(List<FileDiff> batch, CodeReviewContext context, String graphBg, int batchIdx) throws Exception {
-        Map<String, Object> args = new HashMap<>();
-        args.put("repo_dir", context.getRepoPath() != null ? context.getRepoPath() : "");
-
-        // 构建 background：全局架构信息（由调用方缓存传入） + 同批次文件列表
-        String bg = graphBg
-                + "\n\n## 本批次审查文件（共 " + batch.size() + " 个，批次 " + (batchIdx + 1) + "）\n"
-                + "以下文件在此次同一批次中审查，请注意它们之间的交叉引用和调用关系：\n";
-        for (FileDiff f : batch) {
-            bg += "- " + f.getFilePath()
-                    + " (" + (f.getChangeType() != null ? f.getChangeType() : "MODIFY") + ")\n";
-        }
-        args.put("background", bg);
-
-        if (getModel() != null && !getModel().isEmpty()) {
-            args.put("model", getModel());
-        }
-
-        String paths = batch.stream()
-                .map(FileDiff::getFilePath)
-                .filter(Objects::nonNull)
-                .collect(Collectors.joining(","));
-        if (paths.isEmpty()) {
-            log.warn("Batch {}: no valid file paths, skipping", batchIdx + 1);
-            return Collections.emptyList();
-        }
-        args.put("path", paths);
-
-        log.info("Batch {}: calling code_scan for {} files", batchIdx + 1, batch.size());
-
-        String ocrJson = ocrmcpClient.callTool("code_scan", args);
-        OcrReviewResponse ocrResult = MAPPER.readValue(ocrJson, OcrReviewResponse.class);
-
-        List<Finding> findings = new ArrayList<>();
-        List<OcrComment> comments = ocrResult.getComments();
-        if (comments != null) {
-            for (OcrComment cm : comments) {
-                Finding f = Finding.fromOcrComment(cm);
-                String module = ModulePathResolver.resolveModule(cm.getPath());
-                f.setModuleName(module != null ? module : "other");
-                findings.add(f);
-            }
-        }
-
-        log.info("Batch {}: {} ocr comments → {} findings", batchIdx + 1,
-                comments != null ? comments.size() : 0, findings.size());
-        return findings;
     }
 
     // ================================================================
