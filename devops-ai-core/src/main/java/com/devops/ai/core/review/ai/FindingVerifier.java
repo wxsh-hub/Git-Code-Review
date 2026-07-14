@@ -131,11 +131,13 @@ public class FindingVerifier {
     List<Finding> checkLineAccuracy(List<Finding> findings, String repoPath, FilterResult result) {
         List<Finding> valid = new ArrayList<>();
         for (Finding f : findings) {
-            // startLine ≤ 0 → 拒绝
+            // startLine ≤ 0 → 兜底到第 1 行（LLM 可能未输出 startLine 字段）
             if (f.getStartLine() <= 0) {
-                log.warn("Finding rejected: startLine={} for file={}", f.getStartLine(), f.getFile());
-                result.reject(f);
-                continue;
+                log.warn("Finding startLine={}, defaulting to 1: file={}, evidence={}",
+                        f.getStartLine(), f.getFile(),
+                        f.getEvidence() != null ? f.getEvidence().substring(0, Math.min(80, f.getEvidence().length())) : "(null)");
+                f.setStartLine(1);
+                f.setEndLine(1);
             }
             // startLine > endLine（LLM 输出颠倒）→ 交换二者
             if (f.getStartLine() > f.getEndLine()) {

@@ -1370,6 +1370,7 @@ public class CodeReviewAiService {
 
         sb.append("**通用规则**（两种模式都适用）：\n");
         sb.append("- 代码能构建部署说明无编译错误和启动失败 → 不要报类型不匹配/签名不对/缺引号/注解误用/Bean 不存在/循环依赖等\n");
+        sb.append("- SQL 中的列名/MyBatis 映射字段/数据库字段 → 实体类定义在其他文件中，你未看到不代表不存在，不要报不存在或映射错误\n");
         sb.append("- 心想「可能」「也许」「建议检查」→ 直接跳过，只有代码中能确证的问题才报\n");
         sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除此 finding\n");
         sb.append("- 不会产生 bug 的不规范写法 → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR\n");
@@ -2173,7 +2174,7 @@ public class CodeReviewAiService {
         // 全量模式 + 不要报告规则（合并）
         sb.append("## ⛔ 不要报告的情况\n");
         sb.append("- 你看到的是模块完整源码，可跨文件分析，但**看不到其他模块** → 不要报「类/Bean/方法不存在」\n");
-        sb.append("- 类型不匹配/签名不对/缺引号/Bean 不存在/循环依赖 → 能部署说明无编译错误和启动失败\n");
+        sb.append("- 类型不匹配/签名不对/缺引号/Bean 不存在/循环依赖/列名不存在/映射字段不存在 → 能部署说明无编译错误和启动失败\n");
         sb.append("- pom.xml/properties/yml → 部署配置，不要报\n");
         sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除\n");
         sb.append("- 不规范但不会产生 bug → CODE_STYLE + LOW，不要归为 NPE/LOGIC_ERROR 等更高严重度\n");
@@ -2422,6 +2423,14 @@ public class CodeReviewAiService {
                     // severity 也可能为 null，兜底
                     if (f.getSeverity() == null) {
                         f.setSeverity(FindingSeverity.MEDIUM);
+                    }
+                    // startLine 也可能为 0（LLM 未输出字段），兜底为第 1 行
+                    if (f.getStartLine() <= 0) {
+                        log.warn("Iterative review: startLine={} for finding, defaulting to 1. evidence={}",
+                                f.getStartLine(),
+                                f.getEvidence() != null ? f.getEvidence().substring(0, Math.min(80, f.getEvidence().length())) : "?");
+                        f.setStartLine(1);
+                        f.setEndLine(1);
                     }
                 }
             }

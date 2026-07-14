@@ -236,7 +236,7 @@ public class DeveloperEfficiencyService {
                 // Parse hunks to get old line ranges (the lines that were changed in parent)
                 List<int[]> oldLineRanges = parseHunkRanges(diffText);
                 if (oldLineRanges.isEmpty()) {
-                    log.warn("  No hunk ranges parsed from diff for {} ({} bytes)", filePath, diffText.length());
+                    log.info("  No hunk ranges parsed from diff for {} ({} bytes), likely new file — skipping blame", filePath, diffText.length());
                     continue;
                 }
 
