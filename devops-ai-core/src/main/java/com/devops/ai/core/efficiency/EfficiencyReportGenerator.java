@@ -213,7 +213,7 @@ public class EfficiencyReportGenerator {
                     && f.getSeverity() != FindingSeverity.HIGH) continue;
 
             String file = f.getFile() != null ? f.getFile() : "-";
-            String line = f.getStartLine() > 0 ? f.getStartLine() + "-" + f.getEndLine() : "-";
+            String line = f.getStartLine() > 0 ? Math.min(f.getStartLine(), f.getEndLine()) + "-" + Math.max(f.getStartLine(), f.getEndLine()) : "-";
             String desc = f.getTrigger() != null ? f.getTrigger().replace("\n", " ").trim() : "-";
             String sev = f.getSeverity().getLevel();
             String owner = f.getOwner() != null && !f.getOwner().isEmpty() ? f.getOwner() : "待指派";

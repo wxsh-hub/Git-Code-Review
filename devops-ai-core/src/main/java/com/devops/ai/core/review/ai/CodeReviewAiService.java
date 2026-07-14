@@ -1393,7 +1393,7 @@ public class CodeReviewAiService {
         sb.append("- CONCURRENCY：共享可变变量无线程安全；HashMap 误用于多线程\n");
         sb.append("- RESOURCE_LEAK：Stream/Connection/IO 未在 try-with-resources 关闭\n");
         sb.append("- ERROR_HANDLING：空 catch、吞异常、finally 中有 return\n");
-        sb.append("- ARCHITECTURE：循环依赖、Controller 直接调 DAO\n");
+        sb.append("- ARCHITECTURE：循环依赖、Controller 直接调 DAO、重复 MyBatis statement ID/重复 Bean 定义、模块结构混乱\n");
         sb.append("- LOGIC_ERROR：条件/计算错误、边界值未处理、注解放错位置不生效（@DS/@Transactional/@Cacheable 在接口、@Async 无代理调用）\n\n");
 
         sb.append("**P2 中危**：\n");
@@ -1418,6 +1418,12 @@ public class CodeReviewAiService {
         sb.append(isFullScan
                 ? "- 从上面的 ```java 代码块中复制，不要自己编造\n\n"
                 : "- 从上面的 ```diff 代码块中复制，不要自己编造\n\n");
+        sb.append("### evidence 完整性\n");
+        sb.append("- evidence 必须**自证问题**——读者只看 evidence 就能确认问题存在，不需要再去翻源码\n");
+        sb.append("- 如果问题是「重复定义」，evidence 中必须能看出两个重复项（可以用省略号跳过不关键的部分，但核心结构必须完整）\n");
+        sb.append("- 如果源码太长，在不关键的地方用 `...` 省略，但保留能证明问题的关键代码\n");
+        sb.append("- 正确：「有两个同名 select id='queryXxx'，分别在第 34 行和第 77 行」——附两段 select 的关键结构\n");
+        sb.append("- 错误：只展示一个 select 就说「有多个相同 id」——读者看不到重复在哪\n\n");
 
         // ===== S6: 置信度 =====
         sb.append("### 置信度\n");
@@ -2210,7 +2216,7 @@ public class CodeReviewAiService {
 
         sb.append("**P0**：SECURITY（SQL注入/${}拼接/XSS/权限绕过/反序列化/SSRF/路径穿越）、TRANSACTION（写操作缺 @Transactional，注意 MyBatis-Plus 内置方法不需要外层事务）、SECRET_EXPOSURE（Java 代码中硬编码密码/Token/密钥，配置文件中的不算）\n\n");
 
-        sb.append("**P1**：NPE（未判空就使用）、CONCURRENCY（共享变量无线程安全、HashMap 误用）、RESOURCE_LEAK（未 try-with-resources 关闭）、ERROR_HANDLING（空 catch/吞异常/finally 中 return）、ARCHITECTURE（循环依赖/Controller 直接调 DAO）、LOGIC_ERROR（条件错误/边界未处理/注解放错位置不生效）\n\n");
+        sb.append("**P1**：NPE（未判空就使用）、CONCURRENCY（共享变量无线程安全、HashMap 误用）、RESOURCE_LEAK（未 try-with-resources 关闭）、ERROR_HANDLING（空 catch/吞异常/finally 中 return）、ARCHITECTURE（循环依赖/Controller 直接调 DAO/重复 MyBatis statement ID/重复 Bean 定义）、LOGIC_ERROR（条件错误/边界未处理/注解放错位置不生效）\n\n");
 
         sb.append("**P2**：PERFORMANCE（循环内 DB 调用/+拼接）、DEPENDENCY（SNAPSHOT/过期版本）\n\n");
 
@@ -2224,7 +2230,10 @@ public class CodeReviewAiService {
         // evidence 要求
         sb.append("## evidence 要求\n");
         sb.append("- 从源码**复制原文**，禁止用文字描述代替\n");
-        sb.append("- ✅ `String sql = \"DELETE FROM \" + table;`　❌「拼接了用户输入的表名」\n\n");
+        sb.append("- ✅ `String sql = \"DELETE FROM \" + table;`　❌「拼接了用户输入的表名」\n");
+        sb.append("- evidence 必须自证问题：读者只看 evidence 就能确认问题存在，不需要翻源码\n");
+        sb.append("- 重复定义类问题，evidence 中必须能看出至少两个重复项的核心结构\n");
+        sb.append("- 源码太长时用 `...` 省略不关键部分，但保留能证明问题的关键代码\n\n");
 
         // severity/category 说明
         sb.append("severity 取值：BLOCKER, HIGH, MEDIUM, LOW\n");
