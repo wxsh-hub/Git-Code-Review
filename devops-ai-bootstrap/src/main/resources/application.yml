@@ -84,6 +84,8 @@ ocr:
 crg:
   enabled: true                               # 是否启用 CRG（关闭后完全走原逻辑）
   url: http://localhost:9527                  # CRG MCP HTTP 服务地址
+  port: 9527                                  # CRG MCP 服务端口
+  startup-timeout-seconds: 30                 # 等待 CRG 启动的超时时间
   connect-timeout: 10000                      # HTTP 连接超时（毫秒）
   read-timeout: 120000                        # HTTP 读取超时 — 查询类操作（毫秒，默认 2 分钟）
   build-read-timeout: 1800000                 # HTTP 读取超时 — 构建操作（毫秒，默认 30 分钟）

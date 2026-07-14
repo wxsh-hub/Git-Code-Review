@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.http.*;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -39,6 +40,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * }</pre>
  */
 @Component
+@DependsOn("crgProcessManager")
 public class CrgClient {
 
     private static final Logger log = LoggerFactory.getLogger(CrgClient.class);
@@ -872,14 +874,15 @@ public class CrgClient {
     // ================================================================
 
     /**
-     * FastMCP 3.4 streamable-http transport 需要先建立 session。
-     * GET /mcp 获取 Mcp-Session-Id，随后的 POST 请求都需要带上。
+     * FastMCP 3.4 streamable-http transport 需要先建立 session 再 initialize。
+     * GET /mcp 获取 Mcp-Session-Id，然后 POST initialize 完成握手。
      */
     private synchronized void ensureSession() {
         if (sessionId != null && System.currentTimeMillis() < sessionExpiry) {
             return;
         }
         try {
+            // Step 1: GET /mcp 获取 session ID
             URL url = new URL(config.getUrl() + "/mcp");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
@@ -889,14 +892,54 @@ public class CrgClient {
             conn.connect();
 
             String sid = conn.getHeaderField("Mcp-Session-Id");
-            if (sid != null && !sid.isEmpty()) {
-                sessionId = sid;
-                sessionExpiry = System.currentTimeMillis() + 3_600_000; // 1 小时
-                log.info("CRG session established: {}", sid);
+            if (sid == null || sid.isEmpty()) {
+                conn.disconnect();
+                log.warn("CRG session init failed: no session ID in response");
+                return;
             }
+            sessionId = sid;
+            sessionExpiry = System.currentTimeMillis() + 3_600_000; // 1 小时
             conn.disconnect();
+            log.info("CRG session established: {}", sid);
+
+            // Step 2: POST initialize 完成 MCP 握手（FastMCP 要求）
+            ObjectNode initReq = MAPPER.createObjectNode();
+            initReq.put("jsonrpc", "2.0");
+            initReq.put("id", REQUEST_ID.getAndIncrement());
+            initReq.put("method", "initialize");
+            ObjectNode params = MAPPER.createObjectNode();
+            params.put("protocolVersion", "2024-11-05");
+            ObjectNode capabilities = MAPPER.createObjectNode();
+            capabilities.put("roots", MAPPER.createObjectNode().put("listChanged", true));
+            params.set("capabilities", capabilities);
+            ObjectNode clientInfo = MAPPER.createObjectNode();
+            clientInfo.put("name", "devops-ai");
+            clientInfo.put("version", "1.0.0");
+            params.set("clientInfo", clientInfo);
+            initReq.set("params", params);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("Accept", "application/json, text/event-stream");
+            headers.set("Mcp-Session-Id", sid);
+            HttpEntity<String> entity = new HttpEntity<>(MAPPER.writeValueAsString(initReq), headers);
+
+            ResponseEntity<String> initResp = restTemplate.postForEntity(
+                    config.getUrl() + "/mcp", entity, String.class);
+            if (initResp.getStatusCode().is2xxSuccessful() && initResp.getBody() != null) {
+                String jsonBody = extractJsonFromSse(initResp.getBody());
+                JsonNode resp = MAPPER.readTree(jsonBody);
+                if (resp.has("result") && !resp.has("error")) {
+                    log.info("CRG session initialized: protocolVersion=2024-11-05");
+                } else {
+                    log.warn("CRG session initialize returned unexpected: {}", initResp.getBody());
+                }
+            } else {
+                log.warn("CRG session initialize failed: HTTP {}", initResp.getStatusCodeValue());
+            }
         } catch (Exception e) {
             log.warn("CRG session init failed: {}", e.getMessage());
+            sessionId = null;
         }
     }
 

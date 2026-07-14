@@ -52,6 +52,14 @@ public class CrgConfig {
     @Value("${crg.summary.fanin-threshold:3}")
     private int faninThreshold;
 
+    /** CRG MCP HTTP 服务端口 */
+    @Value("${crg.port:9527}")
+    private int port;
+
+    /** 等待 CRG 启动的超时秒数 */
+    @Value("${crg.startup-timeout-seconds:30}")
+    private int startupTimeoutSeconds;
+
     // ---- getters ----
 
     public boolean isEnabled() { return enabled; }
@@ -64,4 +72,6 @@ public class CrgConfig {
     public int getMaxCallers() { return maxCallers; }
     public int getMaxCallees() { return maxCallees; }
     public int getFaninThreshold() { return faninThreshold; }
+    public int getPort() { return port; }
+    public int getStartupTimeoutSeconds() { return startupTimeoutSeconds; }
 }
