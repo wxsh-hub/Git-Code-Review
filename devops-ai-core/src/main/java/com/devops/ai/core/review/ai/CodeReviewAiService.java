@@ -1194,6 +1194,10 @@ public class CodeReviewAiService {
                     prompt.append(ec.getCaller()).append(" → ").append(ec.getCallee()).append(", ");
                 }
                 prompt.append("\n");
+                // P0 修复 — 提醒 LLM 关注调用方兼容性
+                prompt.append("⚠️ 这些外部调用方依赖本模块的接口，请额外检查：\n");
+                prompt.append("- 接口变更是否会导致调用方出现运行时异常（如返回 null、抛出新异常）\n");
+                prompt.append("- 方法语义是否发生了不兼容变化（如原来保证非空返回现在可能返回 null）\n");
             }
             if (s.getModuleFlows() != null && !s.getModuleFlows().isEmpty()) {
                 prompt.append("涉及关键流：");
@@ -1527,6 +1531,7 @@ public class CodeReviewAiService {
         } else {
             // Diff 增量模式
             sb.append("**Diff 模式上下文**：你**只能看到变更文件**，未变更的代码对你不可见。\n");
+            sb.append("- **diff 中 - 开头的行是已删除的代码**，只作为参考上下文理解变更意图，**不要对已删除的代码报告问题**\n");
             sb.append("- 看到 @Autowired 的 bean 在 diff 中找不到定义 → 不代表不存在，不要报\n");
             sb.append("- 看到 import 了某个类但在 diff 中看不到 → 正常，不要报\n");
             sb.append("- 看到 @Async(\"xxx\") 但 diff 中没有 Executor bean → 大概率在其他文件定义了，不要报\n");
@@ -1534,7 +1539,7 @@ public class CodeReviewAiService {
         }
 
         sb.append("**通用规则**（两种模式都适用）：\n");
-        sb.append("- 代码能构建部署说明无编译错误 → 不要报类型不匹配/签名不对/缺引号/注解误用等\n");
+        sb.append("- 代码能构建部署说明无编译错误和启动失败 → 不要报类型不匹配/签名不对/缺引号/注解误用/Bean 不存在/循环依赖等\n");
         sb.append("- 心想「可能」「也许」「建议检查」→ 直接跳过，只有代码中能确证的问题才报\n");
         sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除此 finding\n");
         sb.append("- 不会产生 bug 的不规范写法 → CODE_STYLE + P3，不要归为 NPE/LOGIC_ERROR\n");
@@ -1586,13 +1591,16 @@ public class CodeReviewAiService {
 
         // ===== S6: 置信度 =====
         sb.append("### 置信度\n");
-        sb.append("- 确证 → 0.85-0.99；不确定 → ≤0.70 或直接跳过\n\n");
+        sb.append("- 0.85-0.99：代码中有确凿证据，不需要任何推测\n");
+        sb.append("- 0.70-0.84：代码模式可疑，但在可见上下文中无法完全证实\n");
+        sb.append("- ≤0.69：需要推测或不确定 → 宁可不报，不要输出 finding\n");
+        sb.append("- **如果 reason 中写了「可能」「也许」「不确定」「需要验证」「建议检查」，confidence 必须 ≤0.70**\n\n");
 
         // ===== S7: 输出格式 + 要求 =====
         sb.append("### 输出格式\n");
         sb.append("直接输出 JSON（不要 ```json 包裹）：\n");
         sb.append("{\"comments\": [{\"path\": \"...\", \"category\": \"NPE\", \"content\": \"...\", \"existingCode\": \"...\", \"suggestionCode\": \"...\", \"startLine\": ");
-        sb.append(isFullScan ? "源文件行号" : "diff +c侧行号");
+        sb.append(isFullScan ? "源文件行号" : "diff hunk 中 + 行前面的行号（即新文件中的实际行号）");
         sb.append(", \"endLine\": 行号, \"thinking\": \"...\"}]}\n");
         sb.append("没有问题则 {\"comments\": []}\n");
         sb.append("category 取值：SECURITY, NPE, TRANSACTION, CONCURRENCY, RESOURCE_LEAK, ERROR_HANDLING, SECRET_EXPOSURE, CODE_STYLE, PERFORMANCE, DEPENDENCY, ARCHITECTURE, LOGIC_ERROR, HARDCODED, DEAD_CODE, OTHER\n");
@@ -2321,11 +2329,15 @@ public class CodeReviewAiService {
         sb.append("2. **并发问题** — 必须先确认：变量是类字段而非局部变量、确实有多线程场景\n");
         sb.append("3. **资源泄漏** — 必须先确认：无 try-with-resources 且无框架自动关闭（Hutool HttpRequest 自动管理连接）\n");
         sb.append("无法 grep 确认 → confidence ≤ 0.60\n\n");
+        sb.append("**⚠️ grep 的代码只用来验证当前模块文件的问题**：\n");
+        sb.append("- grep 查看的外部代码仅用于确认或排除当前模块 finding 的真伪\n");
+        sb.append("- **不要**在 grep 返回的外部文件中找新问题 —— 审查范围限定在当前模块的文件\n");
+        sb.append("- 如果在 grep 结果中发现了其他模块的独立缺陷，不要输出为 finding\n\n");
 
         // 全量模式 + 不要报告规则（合并）
         sb.append("## ⛔ 不要报告的情况\n");
         sb.append("- 你看到的是模块完整源码，可跨文件分析，但**看不到其他模块** → 不要报「类/Bean/方法不存在」\n");
-        sb.append("- 类型不匹配/签名不对/缺引号 → 能部署说明无编译错误\n");
+        sb.append("- 类型不匹配/签名不对/缺引号/Bean 不存在/循环依赖 → 能部署说明无编译错误和启动失败\n");
         sb.append("- pom.xml/properties/yml → 部署配置，不要报\n");
         sb.append("- 自我否认（写了「不会抛异常」「实际不会有问题」）→ 立刻删除\n");
         sb.append("- 不规范但不会产生 bug → CODE_STYLE + LOW，不要归为 NPE/LOGIC_ERROR 等更高严重度\n");
@@ -2346,7 +2358,16 @@ public class CodeReviewAiService {
         sb.append("- **模块社区**：代码的模块归属和耦合度，高耦合区域需要更严格的审查\n\n");
         sb.append("**当你需要查看某个方法的调用关系时**，发出 grep 请求（symbol 填 ClassName.methodName），\n");
         sb.append("系统会返回精确的调用链（调用者 + 被调用者 + 方法体），而非纯文本匹配。\n");
-        sb.append("这比传统的 grep 高效得多，通常 1-2 轮就能确认一个 finding。\n\n");
+        sb.append("例如发送 symbol: \"UserService.save\"，系统可能返回：\n");
+        sb.append("```\n");
+        sb.append("### 调用者\n");
+        sb.append("- OrderController.createOrder (OrderController.java:45)\n");
+        sb.append("### 被调用者\n");
+        sb.append("- UserMapper.insert (UserMapper.java:12)\n");
+        sb.append("### 方法体\n");
+        sb.append("public void save(User user) { ... }\n");
+        sb.append("```\n");
+        sb.append("你可以据此直接判断事务边界、异常传播和调用链影响范围，无需再分别 grep 调用者和被调用者。\n\n");
         sb.append("**利用 CRG 数据的策略**：\n");
         sb.append("1. 先看高风险方法列表，优先审查这些方法的实现\n");
         sb.append("2. 对可疑方法发 grep 请求，系统会返回调用链，帮你判断影响范围\n");
