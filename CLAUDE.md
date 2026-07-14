@@ -52,7 +52,8 @@ bash start.sh start      # 后台启动
 | 数据库 | H2 文件模式，URL: `jdbc:h2:file:../data/devops-ai`，用户 `sa`，无密码 |
 | 日志 | `logs/devops-ai.log` |
 | 构建 | `mvn clean package -DskipTests`，产物在 `devops-ai-bootstrap/target/` |
-| 停止服务 | `taskkill /f /im java.exe`（Windows，会终止所有 Java 进程） |
+| 停止服务 | `taskkill /f /im java.exe`（Windows，会终止所有 Java 进程，CRG exe 由 @PreDestroy 自动关闭） |
+| CRG 服务 | 启动时自动内嵌启动（code-review-graph.exe，端口 9527），关闭时自动销毁 |
 
 ## Git 仓库（多仓库架构）
 
@@ -99,7 +100,7 @@ git push github master
 
 - **type**：`feat`/`fix`/`docs`/`style`/`refactor`/`perf`/`test`/`chore`/`ci`/`revert`
 - **scope**：中文模块名（如 `审查引擎`、`报告生成`、`前端页面`）
-- **description**：中文动宾短语，不加句号，不超过 50 字符
+- **description**：中文动宾短语，不加句号，不超过 50 字符。**所有提交标题和描述必须使用中文**
 - **body**：说明为什么做、怎么做、影响范围
 - **不要**加 Co-Authored-By 行
 
@@ -116,11 +117,19 @@ feat(深度扫描): 跳过编译错误类审查减少误判
 ```bash
 # 1. 停止
 cmd.exe //c "taskkill /F /IM java.exe /T"
+# 1b. 清理残留 CRG（极端情况，一般 Spring Boot 关闭时 @PreDestroy 已自动清理）
+cmd.exe //c "taskkill /F /IM code-review-graph.exe /T" 2>nul
 # 2. 构建
 cd D:/111/devops-ai && mvn clean package -DskipTests -q
 # 3. 启动（注意目录）
 cd D:/111/devops-ai/devops-ai-bootstrap
 nohup java -Xms1g -Xmx1g -Dfile.encoding=UTF-8 -jar target/devops-ai-bootstrap-1.0.0.jar > ../logs/console.log 2>&1 &
+```
+
+启动后 CRG MCP 服务会自动启动（端口 9527，约 5 秒就绪），日志中应看到：
+```
+CRG: service ready at http://localhost:9527/mcp
+CRG client initialized: available=true
 ```
 
 ## 已知问题与处理
